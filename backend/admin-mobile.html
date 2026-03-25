@@ -1,0 +1,512 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WEBtrade 管理后台</title>
+  <style>
+    * { box-sizing: border-box; font-family: Arial, sans-serif; }
+    body { margin: 0; background: #f3f6fb; color: #1f2a37; }
+    .wrap { width: 100%; min-height: 100vh; padding: 10px; }
+    .card { background: #fff; border-radius: 12px; padding: 12px; margin-bottom: 10px; box-shadow: 0 2px 10px rgba(0,0,0,.06); }
+    h1, h2, h3 { margin: 0 0 10px; }
+    input, textarea, button, select { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #d7deea; margin-top: 8px; font-size: 14px; }
+    button { background: #2d67f2; color: #fff; border: 0; font-weight: 600; min-height: 42px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+    .pill { display: inline-block; background: #eaf0ff; color: #2856d8; padding: 3px 8px; border-radius: 999px; font-size: 12px; }
+    .item { border: 1px solid #e9edf5; border-radius: 10px; padding: 10px; margin-top: 8px; background: #fff; }
+    .muted { color: #64748b; font-size: 12px; }
+    .danger { background: #e53935; }
+    .ghost { background: #edf3ff; color: #2449b9; }
+    .toolbar { position: sticky; top: 0; z-index: 5; background: #f3f6fb; padding-bottom: 8px; }
+    .fileInput { display: none; }
+    .fileLabel { display: inline-flex; width: 100%; justify-content: center; align-items: center; min-height: 42px; margin-top: 8px; border-radius: 8px; border: 1px solid #2d67f2; color: #2d67f2; background: #eef4ff; font-weight: 600; font-size: 14px; }
+    .listHint { margin-top: 6px; font-size: 12px; color: #64748b; }
+    @media (max-width: 768px) {
+      .row, .row3 { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>管理员操作台</h1>
+      <div class="muted">移动端优先，支持产品增删改、图片上传、留言管理与站点配置。</div>
+    </div>
+
+    <div class="card" id="loginCard">
+      <h2>登录</h2>
+      <input id="username" placeholder="用户名" value="admin123" />
+      <input id="password" type="password" placeholder="密码" />
+      <button onclick="login()">登录</button>
+      <div id="loginMsg" class="muted"></div>
+    </div>
+
+    <div id="panel" style="display:none;">
+      <div class="card">
+        <h2>产品管理 <span class="pill" id="productCount">0</span></h2>
+        <input id="editingId" type="hidden" />
+        <div class="row">
+          <input id="title" placeholder="产品标题" />
+          <input id="category" list="categoryOptions" placeholder="分类" />
+        </div>
+        <datalist id="categoryOptions"></datalist>
+        <textarea id="description" rows="4" placeholder="产品介绍"></textarea>
+        <input id="images" class="fileInput" type="file" multiple accept="image/*" />
+        <label for="images" class="fileLabel">上传图片</label>
+        <div id="imageTip" class="listHint">未选择图片</div>
+        <div class="row">
+          <button onclick="saveProduct()">新增产品</button>
+          <button class="ghost" onclick="resetForm()">清空编辑</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>批量导入产品</h2>
+        <div class="muted" style="margin-bottom: 10px; font-size: 13px;">
+          1. 准备一个 <b>CSV</b> 文件，无表头或包含表头。格式：<br>
+          <code style="background:#eaf0ff; color:#2449b9; padding:2px 4px; border-radius:4px; display:inline-block; margin-top:4px; margin-bottom:4px;">列1:标题, 列2:分类, 列3:描述, 列4及以后:图片文件名(如1.png)</code><br>
+          2. 准备一个 <b>ZIP</b> 压缩包，里面包含CSV中引用的所有图片。<br>
+          <span style="color: #e53935;">*注意：请使用 .zip 格式，暂不支持 .rar</span>
+        </div>
+        <form id="bulkImportForm" onsubmit="handleBulkImport(event)">
+          <input id="importCsv" class="fileInput" type="file" accept=".csv" required />
+          <label for="importCsv" class="fileLabel" style="margin-top: 0;">上传 CSV 数据文件</label>
+          <div id="csvTip" class="listHint" style="margin-bottom: 8px;">未选择 CSV</div>
+
+          <input id="importZip" class="fileInput" type="file" accept=".zip" required />
+          <label for="importZip" class="fileLabel" style="margin-top: 0;">上传 ZIP 图片压缩包</label>
+          <div id="zipTip" class="listHint" style="margin-bottom: 12px;">未选择 ZIP</div>
+
+          <button type="submit" id="bulkImportBtn" style="background: #10b981;">开始批量导入</button>
+        </form>
+        <div id="bulkImportResult" class="listHint" style="display: none; margin-top: 10px; font-weight: bold;"></div>
+      </div>
+
+      <div class="card">
+        <div class="toolbar">
+          <h3>产品筛选与删除</h3>
+          <div class="row">
+            <input id="searchKeyword" placeholder="搜索产品名/描述/分类" />
+            <select id="filterCategory">
+              <option value="">全部分类</option>
+            </select>
+          </div>
+          <div class="row3">
+            <button class="ghost" onclick="applyFilters()">搜索</button>
+            <button class="ghost" onclick="resetFilters()">重置</button>
+            <button class="ghost" onclick="reloadProducts()">刷新</button>
+          </div>
+          <div class="listHint" id="listMeta">正在加载...</div>
+        </div>
+        <div id="products"></div>
+        <div class="row3" style="margin-top:8px;">
+          <button class="ghost" onclick="prevPage()">上一页</button>
+          <button class="ghost" onclick="nextPage()">下一页</button>
+          <button class="ghost" onclick="reloadProducts()">当前页刷新</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>站点配置</h2>
+        <input id="phone" placeholder="电话" />
+        <input id="email" placeholder="邮箱" />
+        <textarea id="address" rows="2" placeholder="地址"></textarea>
+        <input id="wechat_title" placeholder="微信标题" />
+        <input id="wechat_hint" placeholder="微信提示" />
+        
+        <input id="wechat_qr" class="fileInput" type="file" accept="image/*" />
+        <label for="wechat_qr" class="fileLabel">上传微信二维码图片</label>
+        <div id="qrTip" class="listHint">未选择二维码图片</div>
+
+        <input id="dashscope_api_key" placeholder="DashScope API Key (用于 AI)" style="margin-top: 10px;" />
+        <input id="ai_embedding_model" placeholder="向量模型名称 (默认: text-embedding-v3)" style="margin-top: 10px;" />
+        <input id="ai_chat_model" placeholder="对话模型名称 (默认: qwen3.5-flash)" style="margin-top: 10px;" />
+        <textarea id="ai_system_prompt" rows="3" placeholder="AI System Prompt (可选)" style="margin-top: 10px;"></textarea>
+
+        <button onclick="saveConfig()" style="margin-top: 10px;">保存站点配置</button>
+      </div>
+
+      <div class="card">
+        <h2>AI 知识库管理</h2>
+        <div class="muted" style="margin-bottom: 10px; font-size: 13px;">
+          更新知识库将读取所有产品信息并生成向量数据（需先配置并保存 DashScope API Key）。
+        </div>
+        <button id="updateKbBtn" onclick="updateKb()" style="background: #a855f7;">更新知识库</button>
+        <div id="kbProgressBox" style="display: none; margin-top: 15px; padding: 10px; background: #f3f4f6; border-radius: 8px; border-left: 4px solid #a855f7;">
+          <div style="font-size: 13px; font-weight: bold; color: #4b5563; margin-bottom: 5px;">更新进度：</div>
+          <div id="kbProgressText" style="font-size: 12px; color: #6b7280; max-height: 150px; overflow-y: auto; white-space: pre-wrap; font-family: monospace;"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>留言管理</h2>
+        <div id="messages"></div>
+      </div>
+
+      <div class="card">
+        <button class="ghost" onclick="window.open('/admin/pocketbase','_blank')">打开 PocketBase 原生后台</button>
+        <button class="danger" onclick="logout()">退出登录</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const state = {
+      page: 1,
+      perPage: 30,
+      totalPages: 1,
+      totalItems: 0,
+      keyword: '',
+      category: ''
+    };
+
+    async function req(url, options = {}) {
+      const resp = await fetch(url, { credentials: 'include', ...options });
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        throw new Error(data.error || '请求失败');
+      }
+      return resp.json().catch(() => ({}));
+    }
+
+    async function login() {
+      const username = document.getElementById('username').value;
+      const password = document.getElementById('password').value;
+      try {
+        await req('/admin/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password })
+        });
+        document.getElementById('loginCard').style.display = 'none';
+        document.getElementById('panel').style.display = 'block';
+        await loadAll();
+      } catch (e) {
+        document.getElementById('loginMsg').textContent = e.message;
+      }
+    }
+
+    async function logout() {
+      await req('/admin/logout', { method: 'POST' });
+      location.reload();
+    }
+
+    async function loadProducts() {
+      const query = new URLSearchParams({
+        page: state.page,
+        perPage: state.perPage,
+        keyword: state.keyword,
+        category: state.category
+      });
+      const data = await req('/admin/api/products?' + query.toString());
+      let products = data.items || [];
+      
+      // Client-side sorting for keyword search
+      if (state.keyword) {
+        const lowerKeyword = state.keyword.toLowerCase();
+        products.sort((a, b) => {
+          const titleA = a.title || '';
+          const titleB = b.title || '';
+          
+          const getScore = (title) => {
+            if (title === state.keyword) return 3; // Exact case-sensitive match
+            if (title.toLowerCase() === lowerKeyword) return 2; // Exact case-insensitive match
+            if (title.includes(state.keyword)) return 1; // Partial case-sensitive match
+            if (title.toLowerCase().includes(lowerKeyword)) return 0.5; // Partial case-insensitive match
+            return 0;
+          };
+
+          const scoreA = getScore(titleA);
+          const scoreB = getScore(titleB);
+
+          return scoreB - scoreA;
+        });
+      }
+      
+      window.__products = products;
+      state.totalPages = data.totalPages || 1;
+      state.totalItems = data.totalItems || 0;
+      document.getElementById('productCount').textContent = state.totalItems;
+      document.getElementById('listMeta').textContent = `第 ${state.page} / ${state.totalPages} 页，共 ${state.totalItems} 条`;
+      document.getElementById('products').innerHTML = products.map(p => `
+        <div class="item">
+          <div><strong>${p.title || ''}</strong></div>
+          <div class="muted">${p.category || ''}</div>
+          <div class="muted">${(p.description || '').slice(0, 120)}</div>
+          <div class="row">
+            <button class="ghost" onclick="editProductById('${p.id}')">编辑</button>
+            <button class="danger" onclick="removeProduct('${p.id}')">删除</button>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    async function loadCategories() {
+      const categories = await req('/admin/api/categories');
+      const list = categories.map(c => c.category).filter(Boolean);
+      const options = list.map(c => `<option value="${c}">${c}</option>`).join('');
+      document.getElementById('categoryOptions').innerHTML = options;
+      document.getElementById('filterCategory').innerHTML = '<option value="">全部分类</option>' + options;
+    }
+
+    async function saveProduct() {
+      try {
+        const fd = new FormData();
+        const editingId = document.getElementById('editingId').value;
+        fd.append('title', document.getElementById('title').value);
+        fd.append('category', document.getElementById('category').value);
+        fd.append('description', document.getElementById('description').value);
+        const files = document.getElementById('images').files;
+        for (const f of files) fd.append('images', f);
+        
+        let res;
+        if (editingId) {
+          res = await req('/admin/api/products/' + editingId, { method: 'PATCH', body: fd });
+        } else {
+          res = await req('/admin/api/products', { method: 'POST', body: fd });
+        }
+        
+        alert(editingId ? '修改产品成功！' : '新增产品成功！');
+        resetForm();
+        await loadProducts();
+      } catch (err) {
+        alert('保存产品失败: ' + err.message);
+      }
+    }
+
+    function editProduct(id, title, category, description) {
+      document.getElementById('editingId').value = id;
+      document.getElementById('title').value = title;
+      document.getElementById('category').value = category;
+      document.getElementById('description').value = description;
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    function editProductById(id) {
+      const p = (window.__products || []).find((item) => item.id === id);
+      if (!p) return;
+      editProduct(p.id, p.title || '', p.category || '', p.description || '');
+    }
+
+    function resetForm() {
+      document.getElementById('editingId').value = '';
+      document.getElementById('title').value = '';
+      document.getElementById('category').value = '';
+      document.getElementById('description').value = '';
+      document.getElementById('images').value = '';
+      document.getElementById('imageTip').textContent = '未选择图片';
+    }
+
+    async function removeProduct(id) {
+      if (!confirm('确认删除该产品？')) return;
+      await req('/admin/api/products/' + id, { method: 'DELETE' });
+      await loadProducts();
+    }
+
+    function applyFilters() {
+      state.keyword = document.getElementById('searchKeyword').value.trim();
+      state.category = document.getElementById('filterCategory').value;
+      state.page = 1;
+      loadProducts();
+    }
+
+    function resetFilters() {
+      document.getElementById('searchKeyword').value = '';
+      document.getElementById('filterCategory').value = '';
+      state.keyword = '';
+      state.category = '';
+      state.page = 1;
+      loadProducts();
+    }
+
+    function prevPage() {
+      if (state.page <= 1) return;
+      state.page -= 1;
+      loadProducts();
+    }
+
+    function nextPage() {
+      if (state.page >= state.totalPages) return;
+      state.page += 1;
+      loadProducts();
+    }
+
+    function reloadProducts() {
+      loadProducts();
+    }
+
+    async function loadConfig() {
+      const c = await req('/admin/api/site-config');
+      document.getElementById('phone').value = c.phone || '';
+      document.getElementById('email').value = c.email || '';
+      document.getElementById('address').value = c.address || '';
+      document.getElementById('wechat_title').value = c.wechat_title || '';
+      document.getElementById('wechat_hint').value = c.wechat_hint || '';
+      document.getElementById('dashscope_api_key').value = c.dashscope_api_key || '';
+      document.getElementById('ai_embedding_model').value = c.ai_embedding_model || 'text-embedding-v3';
+      document.getElementById('ai_chat_model').value = c.ai_chat_model || 'qwen3.5-flash';
+      document.getElementById('ai_system_prompt').value = c.ai_system_prompt || '';
+    }
+
+    async function saveConfig() {
+      const fd = new FormData();
+      fd.append('phone', document.getElementById('phone').value);
+      fd.append('email', document.getElementById('email').value);
+      fd.append('address', document.getElementById('address').value);
+      fd.append('wechat_title', document.getElementById('wechat_title').value);
+      fd.append('wechat_hint', document.getElementById('wechat_hint').value);
+      fd.append('dashscope_api_key', document.getElementById('dashscope_api_key').value);
+      fd.append('ai_embedding_model', document.getElementById('ai_embedding_model').value);
+      fd.append('ai_chat_model', document.getElementById('ai_chat_model').value);
+      fd.append('ai_system_prompt', document.getElementById('ai_system_prompt').value);
+      const qr = document.getElementById('wechat_qr').files[0];
+      if (qr) fd.append('wechat_qr', qr);
+      await req('/admin/api/site-config', { method: 'PATCH', body: fd });
+      alert('保存成功');
+    }
+
+    async function loadMessages() {
+      const list = await req('/admin/api/messages');
+      document.getElementById('messages').innerHTML = list.map(m => `
+        <div class="item">
+          <div><strong>${m.name || ''}</strong> <span class="muted">${m.email || ''}</span></div>
+          <div>${m.message || ''}</div>
+          <div class="row">
+            <button class="ghost" onclick="readMessage('${m.id}')">标记已读</button>
+            <button class="danger" onclick="deleteMessage('${m.id}')">删除</button>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    async function readMessage(id) {
+      await req('/admin/api/messages/' + id + '/read', { method: 'PATCH' });
+      await loadMessages();
+    }
+
+    async function deleteMessage(id) {
+      if (!confirm('确认删除留言？')) return;
+      await req('/admin/api/messages/' + id, { method: 'DELETE' });
+      await loadMessages();
+    }
+
+    async function loadAll() {
+      await Promise.all([loadCategories(), loadProducts(), loadConfig(), loadMessages()]);
+    }
+
+    async function updateKb() {
+      const btn = document.getElementById('updateKbBtn');
+      const progressBox = document.getElementById('kbProgressBox');
+      const progressText = document.getElementById('kbProgressText');
+      
+      btn.disabled = true;
+      btn.textContent = '正在更新，请不要关闭页面...';
+      btn.style.opacity = '0.7';
+      progressBox.style.display = 'block';
+      progressText.innerHTML = '正在建立连接...\n';
+
+      try {
+        const eventSource = new EventSource('/admin/api/kb/update');
+        
+        eventSource.onmessage = function(event) {
+          const data = JSON.parse(event.data);
+          
+          if (data.error) {
+             progressText.innerHTML += `<span style="color: #ef4444;">${data.message}</span>\n`;
+          } else {
+             progressText.innerHTML += `${data.message}\n`;
+          }
+          
+          // 自动滚动到底部
+          progressText.scrollTop = progressText.scrollHeight;
+
+          if (data.done) {
+            eventSource.close();
+            btn.disabled = false;
+            btn.textContent = '更新知识库';
+            btn.style.opacity = '1';
+            if (!data.error) {
+               alert('知识库更新完毕！');
+            }
+          }
+        };
+
+        eventSource.onerror = function(err) {
+          console.error("EventSource failed:", err);
+          eventSource.close();
+          btn.disabled = false;
+          btn.textContent = '更新知识库';
+          btn.style.opacity = '1';
+          progressText.innerHTML += `<span style="color: #ef4444;">连接异常中断，请检查网络或刷新重试。</span>\n`;
+        };
+
+      } catch (err) {
+        alert('启动更新失败: ' + err.message);
+        btn.disabled = false;
+        btn.textContent = '更新知识库';
+        btn.style.opacity = '1';
+      }
+    }
+
+    async function handleBulkImport(e) {
+      e.preventDefault();
+      const csvFile = document.getElementById('importCsv').files[0];
+      const zipFile = document.getElementById('importZip').files[0];
+      if (!csvFile || !zipFile) {
+        alert('请选择 CSV 和 ZIP 文件');
+        return;
+      }
+
+      const btn = document.getElementById('bulkImportBtn');
+      const resultDiv = document.getElementById('bulkImportResult');
+      
+      btn.disabled = true;
+      btn.textContent = '正在上传并处理，请耐心等待...';
+      btn.style.opacity = '0.7';
+      resultDiv.style.display = 'none';
+
+      const fd = new FormData();
+      fd.append('csv', csvFile);
+      fd.append('archive', zipFile);
+
+      try {
+        const res = await req('/admin/api/bulk-import', { method: 'POST', body: fd });
+        resultDiv.innerHTML = `<span style="color: #10b981;">导入完成！成功: ${res.successCount} 条，失败: ${res.failCount} 条。</span>`;
+        resultDiv.style.display = 'block';
+        document.getElementById('bulkImportForm').reset();
+        document.getElementById('csvTip').textContent = '未选择 CSV';
+        document.getElementById('zipTip').textContent = '未选择 ZIP';
+        await loadProducts();
+        await loadCategories();
+      } catch (error) {
+        alert('导入失败: ' + error.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '开始批量导入';
+        btn.style.opacity = '1';
+      }
+    }
+
+    document.getElementById('importCsv').addEventListener('change', (e) => {
+      const f = e.target.files?.[0];
+      document.getElementById('csvTip').textContent = f ? `已选择: ${f.name}` : '未选择 CSV';
+    });
+    
+    document.getElementById('importZip').addEventListener('change', (e) => {
+      const f = e.target.files?.[0];
+      document.getElementById('zipTip').textContent = f ? `已选择: ${f.name}` : '未选择 ZIP';
+    });
+
+    document.getElementById('images').addEventListener('change', (e) => {
+      const count = e.target.files?.length || 0;
+      document.getElementById('imageTip').textContent = count ? `已选择 ${count} 张图片` : '未选择图片';
+    });
+    document.getElementById('wechat_qr').addEventListener('change', (e) => {
+      const f = e.target.files?.[0];
+      document.getElementById('qrTip').textContent = f ? `已选择: ${f.name}` : '未选择二维码图片';
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+npm-debug.log
+yarn-error.log
+yarn-debug.log
+.pnpm-debug.log
+
+# Frontend Build
+frontend/dist/
+frontend/build/
+
+# Backend Data & DB (Excluding Data as requested)
+backend/pb_data/
+backend/data/embeddings.json
+
+# Scraped Raw Data
+scraped_data/
+
+# Binaries
+backend/bin/pocketbase.exe
+backend/bin/pocketbase
+
+# Env files
+.env
+.env.local
+.env.development
+.env.production
+
+# IDEs and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

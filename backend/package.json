@@ -1,0 +1,27 @@
+{
+  "name": "backend",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "init:pb": "node initPocketBase.js",
+    "migrate": "node migrateFromScraped.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "adm-zip": "^0.5.16",
+    "axios": "^1.12.2",
+    "better-sqlite3": "^12.8.0",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "csv-parse": "^6.2.0",
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.2.1",
+    "form-data": "^4.0.4",
+    "multer": "^2.0.2",
+    "openai": "^6.32.0"
+  }
+}
