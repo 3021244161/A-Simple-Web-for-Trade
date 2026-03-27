@@ -63,6 +63,20 @@
       </div>
 
       <div class="card">
+        <h2>分类管理</h2>
+        <div class="row">
+          <input id="newCategoryName" placeholder="输入新分类名称" />
+          <button onclick="addCategory()" style="background: #10b981;">添加分类</button>
+        </div>
+        <div class="muted" style="margin-top: 10px; font-size: 13px; color: #e53935;">
+          *警告：删除分类将同时彻底删除该分类下的<b>所有产品</b>，请谨慎操作！
+        </div>
+        <div id="categoryList" style="margin-top: 10px; display: flex; flex-wrap: wrap; gap: 8px;">
+          <!-- Category list renders here -->
+        </div>
+      </div>
+
+      <div class="card">
         <h2>批量导入产品</h2>
         <div class="muted" style="margin-bottom: 10px; font-size: 13px;">
           1. 准备一个 <b>CSV</b> 文件，无表头或包含表头。格式：<br>
@@ -249,6 +263,48 @@
       const options = list.map(c => `<option value="${c}">${c}</option>`).join('');
       document.getElementById('categoryOptions').innerHTML = options;
       document.getElementById('filterCategory').innerHTML = '<option value="">全部分类</option>' + options;
+
+      document.getElementById('categoryList').innerHTML = list.map(c => `
+        <div style="display: inline-flex; align-items: center; background: #f3f6fb; border: 1px solid #d7deea; border-radius: 999px; padding: 4px 12px; font-size: 13px;">
+          <span>${c}</span>
+          <button onclick="deleteCategory('${c}')" style="background: transparent; border: none; color: #e53935; margin: 0 0 0 6px; padding: 0; min-height: auto; font-size: 16px; cursor: pointer; width: auto;" title="删除此分类">&times;</button>
+        </div>
+      `).join('');
+    }
+
+    async function addCategory() {
+      const name = document.getElementById('newCategoryName').value.trim();
+      if (!name) return alert('请输入分类名称');
+      try {
+        await req('/admin/api/categories', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ category: name })
+        });
+        document.getElementById('newCategoryName').value = '';
+        alert('添加分类成功！');
+        await loadCategories();
+      } catch (e) {
+        alert('添加失败: ' + e.message);
+      }
+    }
+
+    async function deleteCategory(name) {
+      if (!confirm(`【危险操作】确定要删除分类 "${name}" 及其包含的【所有产品】吗？\n此操作不可恢复！`)) return;
+      
+      const doubleCheck = prompt(`为防止误删，请输入分类名 "${name}" 以确认删除:`);
+      if (doubleCheck !== name) {
+        return alert('输入不匹配，已取消删除操作。');
+      }
+
+      try {
+        const res = await req('/admin/api/categories/' + encodeURIComponent(name), { method: 'DELETE' });
+        alert(`删除成功！共清理了 ${res.deletedCount} 个关联产品。`);
+        await loadCategories();
+        await loadProducts();
+      } catch (e) {
+        alert('删除失败: ' + e.message);
+      }
     }
 
     async function saveProduct() {

@@ -502,6 +502,55 @@ app.get('/admin/api/categories', requireAdmin, async (req, res) => {
   res.json(categories.map((category) => ({ category })));
 });
 
+app.post('/admin/api/categories', requireAdmin, async (req, res) => {
+  try {
+    const categoryName = String(req.body.category || '').trim().replace(/[\/\\]/g, '');
+    if (!categoryName) return res.status(400).json({ error: 'Category name required' });
+
+    const dirPath = path.join(SCRAPED_ROOT, categoryName);
+    if (!fs.existsSync(dirPath)) {
+      fs.mkdirSync(dirPath, { recursive: true });
+    }
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Add category failed' });
+  }
+});
+
+app.delete('/admin/api/categories/:name', requireAdmin, async (req, res) => {
+  try {
+    const categoryName = String(req.params.name || '').trim().replace(/[\/\\]/g, '');
+    if (!categoryName) return res.status(400).json({ error: 'Category name required' });
+
+    // 1. Delete all products with this category
+    let deletedCount = 0;
+    while (true) {
+      const data = await listRecords('products', {
+        page: 1,
+        perPage: 100,
+        filter: `category="${escapeFilter(categoryName)}"`
+      }, req.pbToken);
+      
+      if (!data.items || data.items.length === 0) break;
+
+      for (const item of data.items) {
+        await deleteRecord('products', item.id, req.pbToken);
+        deletedCount++;
+      }
+    }
+
+    // 2. Delete folder in scraped_data
+    const dirPath = path.join(SCRAPED_ROOT, categoryName);
+    if (fs.existsSync(dirPath)) {
+      fs.rmSync(dirPath, { recursive: true, force: true });
+    }
+
+    res.json({ success: true, deletedCount });
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Delete category failed' });
+  }
+});
+
 app.post('/admin/api/products', requireAdmin, upload.array('images', 20), async (req, res) => {
   try {
     const files = (req.files || []).map((item) => item.path);
