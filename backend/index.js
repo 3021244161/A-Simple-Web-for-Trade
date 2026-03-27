@@ -517,9 +517,9 @@ app.post('/admin/api/categories', requireAdmin, async (req, res) => {
   }
 });
 
-app.delete('/admin/api/categories/:name', requireAdmin, async (req, res) => {
+app.post('/admin/api/categories/delete', requireAdmin, async (req, res) => {
   try {
-    const categoryName = String(req.params.name || '').trim().replace(/[\/\\]/g, '');
+    const categoryName = String(req.body.category || '').trim().replace(/[\/\\]/g, '');
     if (!categoryName) return res.status(400).json({ error: 'Category name required' });
 
     // 1. Delete all products with this category

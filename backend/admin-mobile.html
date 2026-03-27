@@ -179,8 +179,22 @@
     async function req(url, options = {}) {
       const resp = await fetch(url, { credentials: 'include', ...options });
       if (!resp.ok) {
-        const data = await resp.json().catch(() => ({}));
-        throw new Error(data.error || '请求失败');
+        let errorMsg = '请求失败';
+        try {
+          const text = await resp.text();
+          try {
+            const data = JSON.parse(text);
+            errorMsg = data.error || errorMsg;
+          } catch(e) {
+            // Not JSON, likely HTML 404 or 502
+            if (resp.status === 404) {
+              errorMsg = '接口不存在 (请确认已将最新的 index.js 上传到服务器并重启了 Node 服务)';
+            } else {
+              errorMsg = `HTTP ${resp.status}: 服务器异常`;
+            }
+          }
+        } catch(e) {}
+        throw new Error(errorMsg);
       }
       return resp.json().catch(() => ({}));
     }
@@ -298,7 +312,11 @@
       }
 
       try {
-        const res = await req('/admin/api/categories/' + encodeURIComponent(name), { method: 'DELETE' });
+        const res = await req('/admin/api/categories/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ category: name })
+        });
         alert(`删除成功！共清理了 ${res.deletedCount} 个关联产品。`);
         await loadCategories();
         await loadProducts();
