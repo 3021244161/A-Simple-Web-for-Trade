@@ -31,8 +31,10 @@ const AiChat = () => {
     }
 
     const now = Date.now();
-    if (now - lastMessageTime < 60000 && lastMessageTime !== 0) {
-      const remaining = Math.ceil((60000 - (now - lastMessageTime)) / 1000);
+    const cooldownMs = userMessagesCount < 3 ? 5000 : 60000;
+    
+    if (now - lastMessageTime < cooldownMs && lastMessageTime !== 0) {
+      const remaining = Math.ceil((cooldownMs - (now - lastMessageTime)) / 1000);
       setErrorMsg(`Please wait ${remaining} seconds before sending another message.`);
       return;
     }
@@ -170,7 +172,7 @@ const AiChat = () => {
             </button>
           </form>
           <div className="text-center mt-2 text-xs text-gray-400">
-            Limit: 10 messages / session | Cooldown: 1 minute
+            Limit: 10 messages / session | Cooldown: {messages.filter(m => m.role === 'user').length < 3 ? '5 seconds' : '1 minute'}
           </div>
         </div>
       </div>
