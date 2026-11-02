@@ -7,8 +7,10 @@ const multer = require('multer');
 const rateLimit = require('express-rate-limit');
 const {
   PB_URL,
+  PB_ADMIN_PASSWORD,
   escapeFilter,
   adminAuth,
+  validateAdminToken,
   listRecords,
   getRecord,
   createRecord,
@@ -23,20 +25,43 @@ const AdmZip = require('adm-zip');
 const { parse } = require('csv-parse/sync');
 const { OpenAI } = require('openai');
 const axios = require('axios');
+const { pipeline } = require('node:stream/promises');
+const { createAsyncCache } = require('./runtimeCache');
+const { createKnowledgeBase, findNearest } = require('./knowledgeBase');
+const { categoryDirectory, validateArchive, validateChatMessages, positiveInteger, sameOriginAdmin } = require('./security');
 
 const app = express();
-  app.set('trust proxy', 1); // Enable proxy trust for Nginx to get correct client IP
-  const upload = multer({ dest: path.join(__dirname, '.tmp_uploads') });
+app.set('trust proxy', 'loopback'); // Only the local Nginx proxy supplies forwarding headers.
+const upload = multer({
+  dest: path.join(__dirname, '.tmp_uploads'),
+  limits: { fileSize: 50 * 1024 * 1024, files: 20, fields: 30, fieldSize: 64 * 1024 }
+});
 const PORT = Number(process.env.PORT || 3001);
+const HOST = process.env.HOST || '127.0.0.1';
 const ADMIN_COOKIE = 'wb_admin_token';
 const ADMIN_USER = process.env.ADMIN_USERNAME || 'admin123';
-const ADMIN_PASS = process.env.ADMIN_PASSWORD || '@#Wmy666888#<>';
+const ADMIN_PASS = process.env.ADMIN_PASSWORD || '';
 const SCRAPED_ROOT = path.join(__dirname, '..', 'scraped_data');
 
 app.use(cors());
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true }));
+app.disable('x-powered-by');
+app.use(express.json({ limit: '64kb' }));
+app.use(express.urlencoded({ extended: false, limit: '64kb' }));
 app.use(cookieParser());
+app.use('/admin', sameOriginAdmin);
+
+const configCache = createAsyncCache({ ttlMs: 30000, maxEntries: 1 });
+const categoryCache = createAsyncCache({ ttlMs: 60000, maxEntries: 1 });
+const productCache = createAsyncCache({ ttlMs: 60000, maxEntries: 256 });
+const knowledgeBase = createKnowledgeBase(path.join(__dirname, 'data', 'embeddings.json'));
+let maintenanceBusy = false;
+let activeChats = 0;
+let productGeneration = 0;
+const invalidateProducts = () => { productGeneration += 1; productCache.clear(); categoryCache.clear(); };
+const cachedProduct = (id, token) => productCache.get(id, () => getRecord('products', id, token));
+const cachedConfig = token => configCache.get('config', () => getSiteConfigRecord(token));
+const loginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 10, standardHeaders: 'draft-8', legacyHeaders: false });
+const adminLimiter = rateLimit({ windowMs: 60 * 1000, limit: 120, standardHeaders: 'draft-8', legacyHeaders: false });
 
 const contactLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -90,18 +115,41 @@ const getAllDbCategories = async (token) => {
 };
 
 const requireAdmin = async (req, res, next) => {
-  if (!req.cookies?.[ADMIN_COOKIE]) {
+  const token = req.cookies?.[ADMIN_COOKIE];
+  if (typeof token !== 'string' || token.length > 4096 || !/^[\w-]+\.[\w-]+\.[\w-]+$/.test(token)) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
-  req.pbToken = req.cookies[ADMIN_COOKIE];
-  next();
+  try {
+    await validateAdminToken(token);
+    req.pbToken = token;
+    next();
+  } catch (error) {
+    const status = error.response?.status;
+    res.status(status === 400 || status === 401 || status === 403 ? 401 : 503).json({ error: 'Admin session unavailable or expired' });
+  }
+};
+app.use('/admin/api', adminLimiter);
+
+const proxyImage = async (url, req, res) => {
+  const response = await axios.get(url, {
+    responseType: 'stream', timeout: 15000,
+    headers: req.get('if-none-match') ? { 'If-None-Match': req.get('if-none-match') } : {},
+    validateStatus: status => status === 200 || status === 304
+  });
+  for (const name of ['content-type', 'etag', 'last-modified']) {
+    if (response.headers[name]) res.set(name, response.headers[name]);
+  }
+  res.set('Cache-Control', 'public, max-age=86400');
+  res.set('X-Content-Type-Options', 'nosniff');
+  if (response.status === 304) { response.data.destroy(); return res.status(304).end(); }
+  await pipeline(response.data, res);
 };
 
 app.get('/images/:id/:fileName', async (req, res) => {
   try {
     const token = await adminAuth();
-    const record = await getRecord('products', req.params.id, token);
-    const fileName = decodeURIComponent(req.params.fileName || '');
+    const record = await cachedProduct(req.params.id, token);
+    const fileName = req.params.fileName || '';
     if (!Array.isArray(record.images) || !record.images.includes(fileName)) {
       return res.status(404).json({ error: 'Image not found' });
     }
@@ -110,60 +158,50 @@ app.get('/images/:id/:fileName', async (req, res) => {
     // we pipe the image from pocketbase through our node server
     const pbUrl = buildPbFileUrl('products', record.id, fileName);
     // console.log(`[DEBUG] Fetching image from: ${pbUrl}`);
-    const response = await axios.get(pbUrl, { responseType: 'stream' });
-    res.set('Content-Type', response.headers['content-type']);
-    response.data.pipe(res);
+    await proxyImage(pbUrl, req, res);
   } catch (error) {
     console.error(`Error proxying image ${req.params.id}/${req.params.fileName}:`, error.message);
-    res.status(404).json({ error: 'Image not found' });
+    if (!res.headersSent) res.status(404).json({ error: 'Image not found' });
   }
 });
 
 app.get('/site-assets/:fileName', async (req, res) => {
   try {
     const token = await adminAuth();
-    const config = await getSiteConfigRecord(token);
-    const fileName = decodeURIComponent(req.params.fileName || '');
+    const config = await cachedConfig(token);
+    const fileName = req.params.fileName || '';
     
     // Check if the requested file is the QR code
     if (config?.wechat_qr && config.wechat_qr === fileName) {
       const pbUrl = buildPbFileUrl('site_config', config.id, config.wechat_qr);
-      const response = await axios.get(pbUrl, { responseType: 'stream' });
-      res.set('Content-Type', response.headers['content-type']);
-      return response.data.pipe(res);
+      return await proxyImage(pbUrl, req, res);
     }
     // Handle array case for PocketBase v0.20+ if it returns array for multiple files
     if (Array.isArray(config?.wechat_qr) && config.wechat_qr.includes(fileName)) {
        const pbUrl = buildPbFileUrl('site_config', config.id, fileName);
-       const response = await axios.get(pbUrl, { responseType: 'stream' });
-       res.set('Content-Type', response.headers['content-type']);
-       return response.data.pipe(res);
+       return await proxyImage(pbUrl, req, res);
     }
 
     // Check if the requested file is the Logo
     if (config?.site_logo && config.site_logo === fileName) {
       const pbUrl = buildPbFileUrl('site_config', config.id, config.site_logo);
-      const response = await axios.get(pbUrl, { responseType: 'stream' });
-      res.set('Content-Type', response.headers['content-type']);
-      return response.data.pipe(res);
+      return await proxyImage(pbUrl, req, res);
     }
     if (Array.isArray(config?.site_logo) && config.site_logo.includes(fileName)) {
        const pbUrl = buildPbFileUrl('site_config', config.id, fileName);
-       const response = await axios.get(pbUrl, { responseType: 'stream' });
-       res.set('Content-Type', response.headers['content-type']);
-       return response.data.pipe(res);
+        return await proxyImage(pbUrl, req, res);
     }
 
     return res.status(404).json({ error: 'Asset not found' });
   } catch (err) {
-    res.status(404).json({ error: 'Asset not found' });
+    if (!res.headersSent) res.status(404).json({ error: 'Asset not found' });
   }
 });
 
 app.get('/api/site-config', async (req, res) => {
   try {
     const token = await adminAuth();
-    const config = await getSiteConfigRecord(token);
+    const config = await cachedConfig(token);
     
     // PocketBase v0.20+ might return string for maxSelect:1 instead of array
     const qr = Array.isArray(config?.wechat_qr) ? config.wechat_qr[0] : config?.wechat_qr;
@@ -187,9 +225,10 @@ app.get('/api/site-config', async (req, res) => {
 app.get('/api/categories', async (req, res) => {
   try {
     const token = await adminAuth();
-    const dbCategories = await getAllDbCategories(token);
-    const fsCategories = getFsCategories();
-    const categories = [...new Set([...dbCategories, ...fsCategories])].sort((a, b) => a.localeCompare(b));
+    const categories = await categoryCache.get('all', async () => {
+      const dbCategories = await getAllDbCategories(token);
+      return [...new Set([...dbCategories, ...getFsCategories()])].sort((a, b) => a.localeCompare(b));
+    });
     res.json(categories.map((category) => ({ category })));
   } catch {
     res.status(500).json({ error: 'Failed to load categories' });
@@ -199,8 +238,8 @@ app.get('/api/categories', async (req, res) => {
 app.get('/api/products', async (req, res) => {
   try {
     const token = await adminAuth();
-    const page = Number(req.query.page || 1);
-    const limit = Number(req.query.limit || 200);
+    const page = positiveInteger(req.query.page, 1, 100000);
+    const limit = positiveInteger(req.query.limit, 50, 100);
     const keyword = String(req.query.keyword || '').trim();
     const category = String(req.query.category || '').trim();
     const filters = [];
@@ -211,12 +250,17 @@ app.get('/api/products', async (req, res) => {
     if (!keyword && category) {
       filters.push(`category="${escapeFilter(category)}"`);
     }
+    const generation = productGeneration;
     const data = await listRecords('products', {
       page,
       perPage: limit,
       sort: '-updated',
-      filter: filters.join(' && ')
+      filter: filters.join(' && '),
+      fields: 'id,category,title,description,images,updated'
     }, token);
+    if (generation === productGeneration) {
+      for (const item of data.items || []) productCache.set(item.id, item);
+    }
     res.json({
       items: (data.items || []).map((item) => toProduct(item, req)),
       totalItems: data.totalItems || 0
@@ -229,7 +273,7 @@ app.get('/api/products', async (req, res) => {
 app.get('/api/product/:id', async (req, res) => {
   try {
     const token = await adminAuth();
-    const record = await getRecord('products', req.params.id, token);
+    const record = await cachedProduct(req.params.id, token);
     res.json(toProduct(record, req));
   } catch {
     res.status(404).json({ error: 'Product not found' });
@@ -239,7 +283,8 @@ app.get('/api/product/:id', async (req, res) => {
 app.post('/api/contact', contactLimiter, async (req, res) => {
   try {
     const { name, email, message } = req.body || {};
-    if (!name || !email || !message) {
+    if (typeof name !== 'string' || typeof email !== 'string' || typeof message !== 'string' ||
+        !name.trim() || !email.trim() || !message.trim() || name.length > 200 || email.length > 254 || message.length > 5000) {
       return res.status(400).json({ error: 'Name, email and message are required.' });
     }
     const token = await adminAuth();
@@ -258,6 +303,15 @@ app.post('/api/contact', contactLimiter, async (req, res) => {
 
 // Chat Rate Limiting & IP Ban Middleware
 const chatRequests = new Map(); // ip -> array of timestamps
+const bannedCache = createAsyncCache({ ttlMs: 60000, maxEntries: 2000 });
+const pruneChatRequests = () => {
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  for (const [ip, times] of chatRequests) {
+    if (!times.length || times[times.length - 1] <= cutoff) chatRequests.delete(ip);
+  }
+};
+const chatCleanupTimer = setInterval(pruneChatRequests, 10 * 60 * 1000);
+chatCleanupTimer.unref();
 
 const chatLimiterMiddleware = async (req, res, next) => {
   try {
@@ -266,27 +320,11 @@ const chatLimiterMiddleware = async (req, res, next) => {
     const threeHoursAgo = now - 3 * 60 * 60 * 1000;
     const twentyFourHoursAgo = now - 24 * 60 * 60 * 1000;
 
-    const token = await adminAuth();
-
-    // 1. Check if IP is in banned_ips collection
-    try {
-      const banned = await listRecords('banned_ips', {
-        filter: `ip="${escapeFilter(ip)}"`,
-        perPage: 1
-      }, token);
-
-      if (banned.items && banned.items.length > 0) {
-        return res.status(403).json({ error: 'Your IP has been banned due to policy violations.' });
-      }
-    } catch (e) {
-      console.warn('banned_ips collection might not exist yet:', e.response?.data || e.message);
+    if (!chatRequests.has(ip) && chatRequests.size >= 5000) {
+      pruneChatRequests();
+      if (chatRequests.size >= 5000) return res.status(503).json({ error: 'Chat is busy, please try again later.' });
     }
-
-    // 2. Track requests
-    if (!chatRequests.has(ip)) {
-      chatRequests.set(ip, []);
-    }
-    const timestamps = chatRequests.get(ip);
+    const timestamps = chatRequests.get(ip) || [];
     
     // Clean up old timestamps
     const validTimestamps = timestamps.filter(t => t > twentyFourHoursAgo);
@@ -298,7 +336,9 @@ const chatLimiterMiddleware = async (req, res, next) => {
     // 3. If 24 hours limit is exceeded, insert IP into banned_ips and reject
     if (reqsLast24Hours >= 60) {
       try {
+        const token = await adminAuth();
         await createRecord('banned_ips', { ip: ip, reason: 'Exceeded 24h limit (60 reqs)' }, token);
+        bannedCache.set(ip, true);
       } catch (e) {
         console.error('Failed to add IP to banned_ips:', e.response?.data || e.message);
       }
@@ -309,18 +349,42 @@ const chatLimiterMiddleware = async (req, res, next) => {
       return res.status(429).json({ error: 'Too many requests in the last 3 hours. Please try again later.' });
     }
 
+    const cooldown = validTimestamps.length < 3 ? 5000 : 60000;
+    const remaining = cooldown - (now - (validTimestamps[validTimestamps.length - 1] || 0));
+    if (remaining > 0) {
+      res.set('Retry-After', String(Math.ceil(remaining / 1000)));
+      return res.status(429).json({ error: 'Please wait before sending another message.' });
+    }
+
     // Add current request timestamp
     validTimestamps.push(now);
     chatRequests.set(ip, validTimestamps);
 
+    const banned = await bannedCache.get(ip, async () => {
+      const token = await adminAuth();
+      try {
+        const data = await listRecords('banned_ips', { filter: `ip="${escapeFilter(ip)}"`, perPage: 1 }, token);
+        return Boolean(data.items?.length);
+      } catch (error) {
+        if (error.response?.status === 404) return false;
+        throw error;
+      }
+    });
+    if (banned) return res.status(403).json({ error: 'Your IP has been banned due to policy violations.' });
+
     next();
   } catch (error) {
-    console.error('Chat limiter error:', error);
+    console.error('Chat limiter error:', error.message);
     res.status(500).json({ error: 'Internal server error during rate limiting' });
   }
 };
 
-app.post('/api/chat', chatLimiterMiddleware, async (req, res) => {
+app.post('/api/chat', (req, res, next) => {
+  if (!validateChatMessages(req.body?.messages)) return res.status(400).json({ error: 'Invalid or oversized chat messages' });
+  next();
+}, chatLimiterMiddleware, async (req, res) => {
+  if (activeChats >= 2) return res.status(429).json({ error: 'Chat is busy, please try again shortly.' });
+  activeChats += 1;
   try {
     const { messages } = req.body;
     if (!Array.isArray(messages) || messages.length === 0) {
@@ -333,11 +397,10 @@ app.post('/api/chat', chatLimiterMiddleware, async (req, res) => {
     }
 
     const token = await adminAuth();
-    const config = await getSiteConfigRecord(token);
+    const config = await cachedConfig(token);
     const apiKey = config?.dashscope_api_key;
     const ai_embedding_model = config?.ai_embedding_model || 'text-embedding-v3';
     const ai_chat_model = config?.ai_chat_model || 'qwen3.5-flash';
-    const systemPromptConfig = config?.ai_system_prompt;
     
     if (!apiKey) {
       return res.status(500).json({ error: 'AI is not configured (missing API key)' });
@@ -346,6 +409,8 @@ app.post('/api/chat', chatLimiterMiddleware, async (req, res) => {
     const openai = new OpenAI({
       apiKey: apiKey,
       baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      timeout: 30000,
+      maxRetries: 0,
     });
 
     // 1. Vectorize user message
@@ -357,58 +422,17 @@ app.post('/api/chat', chatLimiterMiddleware, async (req, res) => {
     });
     const userVector = embedResponse.data[0].embedding;
 
-    // 2. Read embeddings.json and calculate cosine similarity
-    const dataDir = path.join(__dirname, 'data');
-    const embeddingsPath = path.join(dataDir, 'embeddings.json');
-    let embeddingsData = [];
-    if (fs.existsSync(embeddingsPath)) {
-      try {
-        embeddingsData = JSON.parse(fs.readFileSync(embeddingsPath, 'utf-8'));
-      } catch (e) {
-        console.error('Failed to parse embeddings.json', e);
-      }
-    }
-
-    const cosineSimilarity = (vecA, vecB) => {
-      if (!Array.isArray(vecA) || !Array.isArray(vecB) || vecA.length !== vecB.length) {
-        return 0;
-      }
-      let dotProduct = 0;
-      let normA = 0;
-      let normB = 0;
-      for (let i = 0; i < vecA.length; i++) {
-        dotProduct += vecA[i] * vecB[i];
-        normA += vecA[i] * vecA[i];
-        normB += vecB[i] * vecB[i];
-      }
-      if (normA === 0 || normB === 0) return 0;
-      return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
-    };
-
-    // 添加日志方便排查问题
-    // console.log(`User query embedding dimension: ${userVector?.length}`);
-    // if (embeddingsData.length > 0) {
-    //   console.log(`First KB item embedding dimension: ${embeddingsData[0].embedding?.length}`);
-    // }
-
-    const similarities = embeddingsData
-      .map(item => ({
-        id: item.id,
-        score: cosineSimilarity(userVector, item.embedding)
-      }))
-      .filter(item => !Number.isNaN(item.score));
-
-    similarities.sort((a, b) => b.score - a.score);
-    const top5Ids = similarities.slice(0, 5).map(item => item.id);
+    // Reuse compact vectors in memory; only reload after the file changes.
+    const top5Ids = findNearest(await knowledgeBase.get(), userVector);
 
     // 3. Fetch product details for top 5
     const top5Products = [];
     for (const id of top5Ids) {
       try {
-        const record = await getRecord('products', id, token);
+        const record = await cachedProduct(id, token);
         top5Products.push(toProduct(record, req));
       } catch (e) {
-        console.error(`Failed to fetch product ${id}`, e);
+        console.error(`Failed to fetch product ${id}:`, e.message);
       }
     }
 
@@ -435,6 +459,7 @@ app.post('/api/chat', chatLimiterMiddleware, async (req, res) => {
     const completion = await openai.chat.completions.create({
       model: ai_chat_model,
       messages: apiMessages,
+      max_tokens: 1024,
       stream: false
     });
 
@@ -442,20 +467,22 @@ app.post('/api/chat', chatLimiterMiddleware, async (req, res) => {
     res.json({ content });
 
   } catch (error) {
-    console.error('Chat endpoint error:', error);
-    res.status(500).json({ error: error.message || 'Failed to process chat request' });
+    console.error('Chat endpoint error:', error.message);
+    res.status(502).json({ error: 'AI service is temporarily unavailable. Please try again later.' });
+  } finally {
+    activeChats -= 1;
   }
 });
 
 
-app.post('/admin/login', async (req, res) => {
+app.post('/admin/login', loginLimiter, async (req, res) => {
   try {
     const { username, password } = req.body || {};
-    if (username !== ADMIN_USER || password !== ADMIN_PASS) {
+    if (!ADMIN_PASS || username !== ADMIN_USER || password !== ADMIN_PASS) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
     const token = await adminAuth();
-    res.cookie(ADMIN_COOKIE, token, { httpOnly: true, sameSite: 'lax', maxAge: 12 * 60 * 60 * 1000 });
+    res.cookie(ADMIN_COOKIE, token, { httpOnly: true, secure: req.secure, sameSite: 'lax', path: '/admin', maxAge: 12 * 60 * 60 * 1000 });
     res.json({ success: true });
   } catch {
     res.status(500).json({ error: 'Login failed' });
@@ -464,6 +491,7 @@ app.post('/admin/login', async (req, res) => {
 
 app.post('/admin/logout', (req, res) => {
   res.clearCookie(ADMIN_COOKIE);
+  res.clearCookie(ADMIN_COOKIE, { path: '/admin' });
   res.json({ success: true });
 });
 
@@ -504,23 +532,24 @@ app.get('/admin/api/categories', requireAdmin, async (req, res) => {
 
 app.post('/admin/api/categories', requireAdmin, async (req, res) => {
   try {
-    const categoryName = String(req.body.category || '').trim().replace(/[\/\\]/g, '');
-    if (!categoryName) return res.status(400).json({ error: 'Category name required' });
-
-    const dirPath = path.join(SCRAPED_ROOT, categoryName);
+    const { directory: dirPath } = categoryDirectory(SCRAPED_ROOT, req.body.category);
     if (!fs.existsSync(dirPath)) {
       fs.mkdirSync(dirPath, { recursive: true });
     }
+    categoryCache.clear();
     res.json({ success: true });
   } catch (error) {
-    res.status(500).json({ error: error.message || 'Add category failed' });
+    res.status(error.status || 500).json({ error: error.message || 'Add category failed' });
   }
 });
 
 app.post('/admin/api/categories/delete', requireAdmin, async (req, res) => {
   try {
-    const categoryName = String(req.body.category || '').trim().replace(/[\/\\]/g, '');
-    if (!categoryName) return res.status(400).json({ error: 'Category name required' });
+    const { name: categoryName, directory: dirPath } = categoryDirectory(SCRAPED_ROOT, req.body.category);
+    if (fs.existsSync(dirPath) && fs.lstatSync(dirPath).isSymbolicLink()) {
+      return res.status(400).json({ error: 'Symbolic link categories cannot be deleted' });
+    }
+    invalidateProducts();
 
     // 1. Delete all products with this category
     let deletedCount = 0;
@@ -540,14 +569,14 @@ app.post('/admin/api/categories/delete', requireAdmin, async (req, res) => {
     }
 
     // 2. Delete folder in scraped_data
-    const dirPath = path.join(SCRAPED_ROOT, categoryName);
     if (fs.existsSync(dirPath)) {
       fs.rmSync(dirPath, { recursive: true, force: true });
     }
+    invalidateProducts();
 
     res.json({ success: true, deletedCount });
   } catch (error) {
-    res.status(500).json({ error: error.message || 'Delete category failed' });
+    res.status(error.status || 500).json({ error: error.message || 'Delete category failed' });
   }
 });
 
@@ -561,6 +590,7 @@ app.post('/admin/api/products', requireAdmin, upload.array('images', 20), async 
       source_path: req.body.source_path || `manual_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`
     }, files);
     const created = await createRecord('products', form, req.pbToken);
+    invalidateProducts();
     files.forEach((item) => fs.existsSync(item) && fs.unlinkSync(item));
     res.json(created);
   } catch (error) {
@@ -570,26 +600,30 @@ app.post('/admin/api/products', requireAdmin, upload.array('images', 20), async 
 });
 
 app.post('/admin/api/bulk-import', requireAdmin, upload.fields([{ name: 'csv', maxCount: 1 }, { name: 'archive', maxCount: 1 }]), async (req, res) => {
+  let extractDir;
+  let ownsMaintenanceLock = false;
   try {
+    if (maintenanceBusy) return res.status(409).json({ error: 'Another import or knowledge base update is running' });
+    maintenanceBusy = true;
+    ownsMaintenanceLock = true;
     if (!req.files || !req.files['csv'] || !req.files['archive']) {
       return res.status(400).json({ error: 'Please upload both CSV and ZIP files' });
     }
 
-    const extractDir = path.join(__dirname, '.tmp_extract', Date.now().toString());
+    extractDir = path.join(__dirname, '.tmp_extract', Date.now().toString());
     fs.mkdirSync(extractDir, { recursive: true });
 
     // Extract ZIP
     try {
         const zip = new AdmZip(req.files['archive'][0].path);
+        validateArchive(zip.getEntries());
         zip.extractAllTo(extractDir, true);
     } catch (zipErr) {
-        fs.unlinkSync(req.files['csv'][0].path);
-        fs.unlinkSync(req.files['archive'][0].path);
-        return res.status(400).json({ error: 'Failed to extract ZIP. Please ensure it is a valid .zip file.' });
+        return res.status(400).json({ error: 'Invalid ZIP: at most 2000 entries, 50 MB per file and 100 MB uncompressed; paths must stay inside the archive.' });
     }
 
     // Build file map to find images regardless of zip folder structure
-    const fileMap = {};
+    const fileMap = Object.create(null);
     const walkSync = (dir) => {
       const files = fs.readdirSync(dir);
       for (const file of files) {
@@ -604,8 +638,10 @@ app.post('/admin/api/bulk-import', requireAdmin, upload.fields([{ name: 'csv', m
     walkSync(extractDir);
 
     // Parse CSV
-    const csvContent = fs.readFileSync(req.files['csv'][0].path, 'utf-8');
+    if (req.files['csv'][0].size > 5 * 1024 * 1024) return res.status(400).json({ error: 'CSV exceeds 5 MB' });
+    const csvContent = await fs.promises.readFile(req.files['csv'][0].path, 'utf-8');
     const records = parse(csvContent, { columns: false, skip_empty_lines: true });
+    if (records.length > 5000) return res.status(400).json({ error: 'CSV exceeds 5000 rows' });
 
     let successCount = 0;
     let failCount = 0;
@@ -645,15 +681,24 @@ app.post('/admin/api/bulk-import', requireAdmin, upload.fields([{ name: 'csv', m
       }
     }
 
-    // Cleanup
-    fs.rmSync(extractDir, { recursive: true, force: true });
-    fs.unlinkSync(req.files['csv'][0].path);
-    fs.unlinkSync(req.files['archive'][0].path);
-
     res.json({ success: true, successCount, failCount });
   } catch (error) {
     console.error('Bulk import error:', error);
-    res.status(500).json({ error: error.message || 'Bulk import failed' });
+    if (!res.headersSent) res.status(500).json({ error: 'Bulk import failed' });
+  } finally {
+    if (ownsMaintenanceLock) {
+      invalidateProducts();
+      // Keep the lock until bounded cleanup finishes, even when an import fails.
+      try {
+        if (extractDir) await fs.promises.rm(extractDir, { recursive: true, force: true });
+      } catch (error) { console.error('Import cleanup failed:', error.message); }
+      maintenanceBusy = false;
+    }
+    for (const files of Object.values(req.files || {})) {
+      for (const file of files) {
+        await fs.promises.rm(file.path, { force: true }).catch(error => console.error('Upload cleanup failed:', error.message));
+      }
+    }
   }
 });
 
@@ -670,6 +715,7 @@ app.patch('/admin/api/products/:id', requireAdmin, upload.array('images', 20), a
     }
     const form = createFileForm(fields, files);
     const updated = await updateRecord('products', req.params.id, form, req.pbToken);
+    invalidateProducts();
     files.forEach((item) => fs.existsSync(item) && fs.unlinkSync(item));
     res.json(updated);
   } catch (error) {
@@ -680,6 +726,7 @@ app.patch('/admin/api/products/:id', requireAdmin, upload.array('images', 20), a
 
 app.delete('/admin/api/products/:id', requireAdmin, async (req, res) => {
   await deleteRecord('products', req.params.id, req.pbToken);
+  invalidateProducts();
   res.json({ success: true });
 });
 
@@ -698,6 +745,8 @@ app.patch('/admin/api/site-config', requireAdmin, upload.fields([{ name: 'wechat
       wechat_title: req.body.wechat_title || 'WeChat Inquiry',
       wechat_hint: req.body.wechat_hint || '',
       dashscope_api_key: req.body.dashscope_api_key || '',
+      ai_embedding_model: req.body.ai_embedding_model || 'text-embedding-v3',
+      ai_chat_model: req.body.ai_chat_model || 'qwen3.5-flash',
       ai_system_prompt: req.body.ai_system_prompt || ''
     };
     if (req.files && (req.files['wechat_qr'] || req.files['site_logo'])) {
@@ -709,11 +758,13 @@ app.patch('/admin/api/site-config', requireAdmin, upload.fields([{ name: 'wechat
         form.append('site_logo', fs.createReadStream(req.files['site_logo'][0].path));
       }
       const updated = await updateRecord('site_config', config.id, form, req.pbToken);
+      configCache.clear();
       if (req.files['wechat_qr']?.[0]) fs.unlinkSync(req.files['wechat_qr'][0].path);
       if (req.files['site_logo']?.[0]) fs.unlinkSync(req.files['site_logo'][0].path);
       return res.json(updated);
     }
     const updated = await updateRecord('site_config', config.id, fields, req.pbToken);
+    configCache.clear();
     res.json(updated);
   } catch (error) {
     res.status(500).json({ error: error.response?.data?.message || 'Update site config failed' });
@@ -739,6 +790,8 @@ app.delete('/admin/api/messages/:id', requireAdmin, async (req, res) => {
 
 // 使用 SSE (Server-Sent Events) 返回知识库更新进度
 app.get('/admin/api/kb/update', requireAdmin, async (req, res) => {
+  if (maintenanceBusy) return res.status(409).json({ error: 'Another import or knowledge base update is running' });
+  maintenanceBusy = true;
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
@@ -763,6 +816,8 @@ app.get('/admin/api/kb/update', requireAdmin, async (req, res) => {
     const openai = new OpenAI({
       apiKey: dashscopeApiKey,
       baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      timeout: 30000,
+      maxRetries: 0,
     });
 
     const dataDir = path.join(__dirname, 'data');
@@ -774,7 +829,7 @@ app.get('/admin/api/kb/update', requireAdmin, async (req, res) => {
     let embeddingsData = [];
     if (fs.existsSync(embeddingsPath)) {
       try {
-        embeddingsData = JSON.parse(fs.readFileSync(embeddingsPath, 'utf-8'));
+        embeddingsData = JSON.parse(await fs.promises.readFile(embeddingsPath, 'utf-8'));
       } catch (e) {
         console.error('Failed to parse embeddings.json', e);
         embeddingsData = [];
@@ -855,7 +910,7 @@ app.get('/admin/api/kb/update', requireAdmin, async (req, res) => {
     }
 
     sendProgress('正在将向量数据保存到本地...');
-    fs.writeFileSync(embeddingsPath, JSON.stringify(Array.from(embeddingsMap.values()), null, 2));
+    await knowledgeBase.write(Array.from(embeddingsMap.values()));
 
     sendProgress(`更新完成！新增: ${newCount}, 更新: ${updatedCount}, 删除: ${deletedCount}, 失败: ${failedCount}, 知识库总数: ${embeddingsMap.size}`, false, true);
     res.end();
@@ -863,6 +918,8 @@ app.get('/admin/api/kb/update', requireAdmin, async (req, res) => {
     console.error('KB Update Error:', error);
     sendProgress(`知识库更新失败: ${error.message}`, true, true);
     res.end();
+  } finally {
+    maintenanceBusy = false;
   }
 });
 
@@ -874,6 +931,17 @@ app.get('/admin/pocketbase', (req, res) => {
   res.redirect(`${PB_URL}/_/`);
 });
 
-app.listen(PORT, () => {
-  console.log(`BFF running on http://localhost:${PORT}`);
+app.use((error, req, res, next) => {
+  if (res.headersSent) return next(error);
+  const status = error instanceof multer.MulterError || error.type === 'entity.too.large' ? 413 : error.status === 400 ? 400 : 500;
+  res.status(status).json({ error: status === 413 ? 'Upload or request exceeds the allowed size' : status === 400 ? 'Invalid request body' : 'Internal server error' });
 });
+
+if (require.main === module) {
+  if (!ADMIN_PASS || !PB_ADMIN_PASSWORD) {
+    console.error('ADMIN_PASSWORD and PB_ADMIN_PASSWORD must be configured in the process environment before startup.');
+    process.exit(1);
+  }
+  app.listen(PORT, HOST, () => { console.log(`BFF running on http://${HOST}:${PORT}`); });
+}
+module.exports = app;

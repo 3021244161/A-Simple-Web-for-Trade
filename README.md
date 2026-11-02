@@ -1,5 +1,7 @@
 # WEBtrade-plus 项目技术架构报告
 
+生产维护、备份结论、已完成发布和回滚步骤见 [主站维护记录](ops/MAINTENANCE.md)。维护版启动前须配置 `ADMIN_PASSWORD` 与 `PB_ADMIN_PASSWORD` 环境变量；依赖安装和前端构建在本地进行。
+
 ## 一、 系统概览
 
 WEBtrade-plus 是一个面向海外（主打英国市场）的 B2B/B2C 电子元器件产品展示与推荐系统。系统采用了前后端分离的现代化 Web 架构，集成了基于大语言模型（LLM）的智能知识库客服功能，以及完善的后台产品管理系统（支持单件/批量上传）。
@@ -12,8 +14,8 @@ WEBtrade-plus 是一个面向海外（主打英国市场）的 B2B/B2C 电子元
 - **核心技术栈：** React 18 + Vite + TailwindCSS
 - **状态管理：** React Hooks (useState, useEffect)
 - **路由控制：** React Router DOM
-- **UI 风格：** 响应式设计，适配 PC 与移动端。主打现代、简洁的蓝色科技风。
-- **与后端通信：** 使用原生 `fetch` API 与后端的 BFF (Backend for Frontend) 层通信。
+- **UI 风格：** 响应式深蓝工业科技风，使用城市建筑背景及适配手机的压缩静态图片。
+- **与后端通信：** 使用 `fetch` 和 Axios 与 BFF (Backend for Frontend) 层通信，配置请求复用短期缓存。
 
 ### 2. 后端架构 (Backend BFF层)
 - **核心技术栈：** Node.js + Express
@@ -48,8 +50,8 @@ WEBtrade-plus 是一个面向海外（主打英国市场）的 B2B/B2C 电子元
 
 ### 2. 前端核心文件 (`/frontend/src/`)
 - **`App.jsx`**: 全局路由配置，挂载导航栏（`Navbar`）、底部（`Footer`）和全局悬浮的 AI 聊天组件（`AiChat`）。
-- **`pages/Products.jsx`**: **核心业务页面**。负责展示所有产品、多条件搜索过滤、权重排序（完全匹配>部分匹配）、分类侧边栏，以及移动端的自适应交互。
-- **`components/AiChat.jsx`**: **AI 聊天核心组件**。实现了一个带有 3D 悬浮粒子按钮的对话框，处理用户的发送、字数与次数限制、防抖、以及 Markdown 格式的流式/同步文本渲染。
+- **`pages/Products.jsx`**: **核心业务页面**。提供全站搜索、分类筛选、每批 24 条的产品目录、可分享详情链接及询价跳转；短期内存快照帮助恢复列表和滚动位置。
+- **`components/AiChat.jsx`**: **AI 聊天核心组件**。点击入口后按需加载面板，处理发送、字数与次数限制及请求冷却；收到回复后才加载 Markdown 渲染模块，加载失败时保留纯文本。
 
 ### 3. 后端核心文件 (`/backend/`)
 - **`index.js`**: **后端核心入口文件**。

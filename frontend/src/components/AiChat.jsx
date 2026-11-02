@@ -1,183 +1,118 @@
-import React, { useState, useRef, useEffect } from 'react';
-import ReactMarkdown from 'react-markdown';
-import { MessageCircle, X, Send, Bot, User } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
+import { Bot, Send, X } from 'lucide-react';
+import './AiChat.css';
 
-const AiChat = () => {
-  const [isOpen, setIsOpen] = useState(false);
-  const [messages, setMessages] = useState([{ role: 'assistant', content: 'Hello! welcome to HG Electrons ~' }]);
+const PROMPTS = ['How do I request a quotation?', 'Help me find a component.', 'What information should I include in my inquiry?'];
+
+// The launcher keeps the panel mounted after first open to retain the conversation.
+// eslint-disable-next-line react/prop-types
+const AiChat = ({ isOpen, onClose }) => {
+  const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [lastMessageTime, setLastMessageTime] = useState(0);
+  const [attemptCount, setAttemptCount] = useState(0);
   const [errorMsg, setErrorMsg] = useState('');
-  
-  const messagesEndRef = useRef(null);
-
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
+  const [retryAt, setRetryAt] = useState(0);
+  const [Markdown, setMarkdown] = useState(null);
+  const inputRef = useRef(null);
+  const logRef = useRef(null);
+  const requestRef = useRef(null);
+  const pendingRef = useRef(false);
+  const lastMessageTimeRef = useRef(0);
+  const messageIdRef = useRef(0);
+  const hasAssistantReply = messages.some(message => message.role === 'assistant');
 
   useEffect(() => {
-    scrollToBottom();
-  }, [messages, isOpen]);
+    if (!hasAssistantReply) return;
+    let active = true;
+    import('react-markdown').then(module => {
+      if (active) setMarkdown(() => module.default);
+    }).catch(() => { /* Keep readable plain text when the optional renderer cannot load. */ });
+    return () => { active = false; };
+  }, [hasAssistantReply]);
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    if (!input.trim() || isLoading) return;
+  useEffect(() => { if (isOpen) inputRef.current?.focus({ preventScroll: true }); }, [isOpen]);
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKey = event => { if (event.key === 'Escape') { event.preventDefault(); onClose(); } };
+    document.addEventListener('keydown', handleKey);
+    return () => document.removeEventListener('keydown', handleKey);
+  }, [isOpen, onClose]);
+  useEffect(() => {
+    if (isOpen && logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+  }, [messages, isLoading, isOpen]);
+  useEffect(() => () => requestRef.current?.abort(), []);
 
-    const userMessagesCount = messages.filter(m => m.role === 'user').length;
-    if (userMessagesCount >= 10) {
-      setErrorMsg('Session limit reached (10 messages). Please refresh the page to start a new session.');
-      return;
-    }
-
+  const handleSubmit = async event => {
+    event.preventDefault();
+    if (!input.trim() || pendingRef.current) return;
+    if (attemptCount >= 10) { setErrorMsg('You have reached the 10-message session limit. Contact our team to continue your inquiry.'); return; }
     const now = Date.now();
-    const cooldownMs = userMessagesCount < 3 ? 5000 : 60000;
-    
-    if (now - lastMessageTime < cooldownMs && lastMessageTime !== 0) {
-      const remaining = Math.ceil((cooldownMs - (now - lastMessageTime)) / 1000);
-      setErrorMsg(`Please wait ${remaining} seconds before sending another message.`);
-      return;
+    const cooldownMs = attemptCount < 3 ? 5000 : 60000;
+    const nextRequest = Math.max(retryAt, lastMessageTimeRef.current ? lastMessageTimeRef.current + cooldownMs : 0);
+    if (now < nextRequest) { setErrorMsg(`Please wait ${Math.ceil((nextRequest - now) / 1000)} seconds before sending another message.`); return; }
+    const content = input.trim();
+    const userMessage = { id: ++messageIdRef.current, role: 'user', content };
+    // Bound context to the existing API limits without dropping the visible conversation.
+    const context = [userMessage];
+    let length = content.length;
+    for (let index = messages.length - 1; index >= 0 && context.length < 20; index -= 1) {
+      if (messages[index].failed) continue;
+      const previous = { role: messages[index].role, content: messages[index].content.slice(0, 4000) };
+      if (length + previous.content.length > 15000) break;
+      context.unshift(previous);
+      length += previous.content.length;
     }
-
-    const newMessages = [...messages, { role: 'user', content: input.trim() }];
-    setMessages(newMessages);
-    setInput('');
-    setIsLoading(true);
-    setErrorMsg('');
-    setLastMessageTime(now);
-
+    const controller = new AbortController();
+    requestRef.current = controller;
+    pendingRef.current = true;
+    setMessages(current => [...current, userMessage]);
+    setInput(''); setIsLoading(true); setErrorMsg('');
+    setAttemptCount(current => current + 1);
+    lastMessageTimeRef.current = now;
+    const timeout = window.setTimeout(() => controller.abort('timeout'), 65000);
     try {
       const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: newMessages })
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: context.map(({ role, content: text }) => ({ role, content: text })) }), signal: controller.signal,
       });
-
       if (!response.ok) {
-        let errText = 'Failed to request';
-        try {
-          const errData = await response.json();
-          errText = errData.error || errText;
-        } catch(e) {}
-        throw new Error(errText);
+        const retrySeconds = Number(response.headers.get('Retry-After'));
+        if (retrySeconds > 0 && Number.isFinite(retrySeconds)) setRetryAt(Date.now() + retrySeconds * 1000);
+        throw new Error(response.status === 429 ? 'The assistant is busy. Please wait before trying again.' : 'The assistant could not reply. Please try again, or contact our team.');
       }
-
       const data = await response.json();
-      setMessages(prev => [...prev, { role: 'assistant', content: data.content }]);
-      
-    } catch (err) {
-      setMessages(prev => [...prev, { role: 'assistant', content: `Sorry, an error occurred: ${err.message}` }]);
+      if (typeof data.content !== 'string' || !data.content.trim()) throw new Error('The assistant returned an empty reply. Please try again.');
+      setMessages(current => [...current, { id: ++messageIdRef.current, role: 'assistant', content: data.content }]);
+    } catch (error) {
+      if (controller.signal.aborted && controller.signal.reason !== 'timeout') return;
+      setMessages(current => current.map(message => message.id === userMessage.id ? { ...message, failed: true } : message));
+      setInput(current => current || content);
+      setErrorMsg(controller.signal.aborted ? 'The reply took too long. Your message is ready to try again.' : error.message);
     } finally {
-      setIsLoading(false);
+      window.clearTimeout(timeout);
+      pendingRef.current = false;
+      if (!controller.signal.aborted || controller.signal.reason === 'timeout') setIsLoading(false);
     }
   };
 
+  if (!isOpen) return null;
   return (
-    <>
-      {/* Floating Button */}
-      <button
-        onClick={() => setIsOpen(!isOpen)}
-        className={`fixed bottom-8 right-20 md:right-24 z-50 flex items-center justify-center w-14 h-14 bg-indigo-600 text-white rounded-full shadow-[0_10px_20px_rgba(79,70,229,0.4)] hover:shadow-[0_15px_30px_rgba(79,70,229,0.6)] transform hover:-translate-y-2 transition-all duration-300 ease-out ${isOpen ? 'scale-0 opacity-0' : 'scale-100 opacity-100'}`}
-        aria-label="Toggle AI Chat"
-      >
-        {isOpen ? <X size={24} /> : <MessageCircle size={24} />}
-      </button>
-
-      {/* 半屏聊天窗口 (占据屏幕下半部分) */}
-      <div 
-        className={`fixed bottom-0 left-0 right-0 h-[50vh] bg-white dark:bg-gray-900 shadow-[0_-10px_40px_rgba(0,0,0,0.1)] z-40 flex flex-col transition-transform duration-500 ease-in-out ${isOpen ? 'translate-y-0' : 'translate-y-full'}`}
-      >
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-white/10 bg-indigo-900/50 backdrop-blur-md">
-          <div className="flex items-center gap-2">
-            <Bot className="text-indigo-400" size={24} />
-            <h3 className="text-lg font-semibold text-white">AI Assistant</h3>
-          </div>
-          <button 
-            onClick={() => setIsOpen(false)}
-            className="text-gray-400 hover:text-white transition-colors"
-          >
-            <X size={20} />
-          </button>
-        </div>
-
-        {/* Messages Container */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-gray-50 dark:bg-gray-900">
-          {messages.map((msg, idx) => (
-            <div 
-              key={idx} 
-              className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-            >
-              <div className={`max-w-[80%] flex items-start space-x-2 ${msg.role === 'user' ? 'flex-row-reverse space-x-reverse' : 'flex-row'}`}>
-                <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${msg.role === 'user' ? 'bg-indigo-100 text-indigo-600' : 'bg-green-100 text-green-600'}`}>
-                  {msg.role === 'user' ? <User size={16} /> : <Bot size={16} />}
-                </div>
-                <div 
-                  className={`p-3 rounded-2xl ${
-                    msg.role === 'user' 
-                      ? 'bg-indigo-600 text-white rounded-tr-none' 
-                      : 'bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200 border dark:border-gray-700 rounded-tl-none shadow-sm'
-                  }`}
-                >
-                  {msg.role === 'assistant' ? (
-                    <div className="prose prose-sm dark:prose-invert max-w-none">
-                      <ReactMarkdown>{msg.content}</ReactMarkdown>
-                    </div>
-                  ) : (
-                    <p className="whitespace-pre-wrap text-sm">{msg.content}</p>
-                  )}
-                </div>
-              </div>
-            </div>
-          ))}
-          {isLoading && (
-            <div className="flex justify-start">
-              <div className="flex items-start space-x-2">
-                <div className="w-8 h-8 rounded-full bg-green-100 text-green-600 flex items-center justify-center shrink-0">
-                  <Bot size={16} />
-                </div>
-                <div className="bg-white dark:bg-gray-800 p-4 rounded-2xl rounded-tl-none border dark:border-gray-700 shadow-sm">
-                  <div className="flex space-x-2">
-                    <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
-                    <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
-                    <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.4s' }}></div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-          <div ref={messagesEndRef} />
-        </div>
-
-        {/* Input Area */}
-        <div className="p-4 bg-white dark:bg-gray-900 border-t dark:border-gray-800">
-          {errorMsg && (
-            <div className="text-red-500 text-xs mb-2 text-center font-medium">{errorMsg}</div>
-          )}
-          <form onSubmit={handleSubmit} className="flex space-x-2 relative max-w-4xl mx-auto">
-            <input
-              type="text"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              disabled={isLoading}
-              placeholder="Type your message..."
-              className="flex-1 px-4 py-3 rounded-full border border-gray-300 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 text-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50"
-            />
-            <button
-              type="submit"
-              disabled={isLoading || !input.trim()}
-              className="bg-indigo-600 text-white p-3 rounded-full hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
-            >
-              <Send size={20} />
-            </button>
-          </form>
-          <div className="text-center mt-2 text-xs text-gray-400">
-            Limit: 10 messages / session | Cooldown: {messages.filter(m => m.role === 'user').length < 3 ? '5 seconds' : '1 minute'}
-          </div>
-        </div>
+    <section className="ai-chat" role="dialog" aria-modal="false" aria-labelledby="ai-chat-title" aria-describedby="ai-chat-description">
+      <header className="ai-chat-header"><div className="ai-chat-heading"><Bot size={23} aria-hidden="true" /><div><h2 id="ai-chat-title">Product assistant</h2><p id="ai-chat-description">Ask about components and sourcing</p></div></div><button type="button" className="ai-chat-close" onClick={onClose} aria-label="Close product assistant"><X size={20} aria-hidden="true" /></button></header>
+      <div className="ai-chat-log" ref={logRef} role="log" aria-label="Conversation" aria-live="polite" aria-relevant="additions text">
+        {messages.length === 0 && <div className="ai-chat-welcome"><h3>What are you looking for?</h3><p>Start with a part number or tell us what you need. For pricing and availability, <Link to="/contact" onClick={onClose}>contact our team</Link>.</p><div className="ai-chat-prompts">{PROMPTS.map(prompt => <button type="button" key={prompt} onClick={() => { setInput(prompt); inputRef.current?.focus(); }}>{prompt}</button>)}</div></div>}
+        {messages.map(message => <div key={message.id} className={`ai-chat-message ai-chat-message-${message.role}`}><span className="ai-chat-message-author">{message.role === 'user' ? 'You' : 'Product assistant'}</span><div className="ai-chat-message-content">{message.role === 'assistant' && Markdown ? <Markdown>{message.content}</Markdown> : <p>{message.content}</p>}</div>{message.failed && <span className="ai-chat-message-failed">No reply received</span>}</div>)}
+        {isLoading && <p className="ai-chat-loading" role="status">Looking into your question...</p>}
       </div>
-    </>
+      <div className="ai-chat-compose">
+        {errorMsg && <p className="ai-chat-error" role="alert">{errorMsg}</p>}
+        {attemptCount >= 10 && <Link className="ai-chat-contact-link" to="/contact" onClick={onClose}>Continue with our team</Link>}
+        <form onSubmit={handleSubmit}><label className="ai-chat-input-label" htmlFor="ai-chat-input">Your message</label><div className="ai-chat-input-row"><input ref={inputRef} id="ai-chat-input" type="text" value={input} maxLength={2000} onChange={event => setInput(event.target.value)} placeholder="Part number or question" readOnly={isLoading} autoComplete="off" /><button type="submit" aria-label="Send message" disabled={isLoading || !input.trim() || attemptCount >= 10}><Send size={19} aria-hidden="true" /></button></div></form>
+        <p className="ai-chat-note">{Math.max(0, 10 - attemptCount)} messages left this session. Confirm product details with our team.</p>
+      </div>
+    </section>
   );
 };
-
 export default AiChat;

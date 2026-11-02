@@ -1,70 +1,108 @@
-import React from 'react';
-import { Link } from 'react-router-dom';
-import { ArrowRight, Zap, Globe, ShieldCheck } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import { ArrowRight, Search, Cpu, CircuitBoard, Cable, Gauge, Wrench, Zap, ChevronRight } from 'lucide-react';
+import citySkyline from '../assets/city-skyline.webp';
+import citySkylineMobile from '../assets/city-skyline-mobile.webp';
+import './Home.css';
 
-const Home = () => {
-  return (
-    <div className="flex flex-col">
-      {/* Hero Section */}
-      <div className="relative min-h-[600px] flex items-center justify-center overflow-hidden">
-        {/* Animated Abstract Shapes */}
-        <div className="absolute top-[-20%] right-[-10%] w-[600px] h-[600px] bg-fluent-blue/20 rounded-full blur-[100px] animate-pulse z-0"></div>
-        <div className="absolute bottom-[-10%] left-[-10%] w-[500px] h-[500px] bg-indigo-500/20 rounded-full blur-[100px] animate-pulse delay-1000 z-0"></div>
+let catalogCache;
+let catalogExpiry = 0;
+let catalogPending;
+async function readJson(url) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 12000);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) throw new Error('Catalog unavailable');
+    return await response.json();
+  } finally { clearTimeout(timer); }
+}
+function loadHomeCatalog() {
+  if (catalogCache && Date.now() < catalogExpiry) return Promise.resolve(catalogCache);
+  if (!catalogPending) catalogPending = Promise.all([
+    readJson('/api/products?page=1&limit=4'),
+    readJson('/api/categories')
+  ]).then(([products, categories]) => {
+    catalogCache = { products: products.items || [], total: products.totalItems || 0, categories };
+    catalogExpiry = Date.now() + 60000;
+    return catalogCache;
+  }).finally(() => { catalogPending = undefined; });
+  return catalogPending;
+}
+const categoryIcons = [Cpu, CircuitBoard, Zap, Gauge, Cable, Wrench];
+const preferredCategories = ["Integrated Circuits (IC's)", 'Modules', 'Power Supply', 'Sensors', 'Cables & Connectors', 'Tools'];
 
-        <div className="relative z-10 max-w-4xl mx-auto px-4 text-center animate-fluent-enter">
-          <h1 className="text-5xl md:text-7xl font-bold tracking-tight mb-6 text-white drop-shadow-lg">
-            Haoguan Electrons
-          </h1>
-          <p className="text-xl md:text-2xl text-fluent-text-secondary mb-10 font-light max-w-2xl mx-auto leading-relaxed drop-shadow-md">
-            Your Trusted Global Partner for Electronic Components
-          </p>
-          <div className="flex justify-center gap-4">
-            <Link
-              to="/products"
-              className="fluent-btn px-8 py-3 text-lg h-auto shadow-fluent-flyout transition-all transform"
-            >
-              Explore Our Products
-              <ArrowRight className="ml-2 h-5 w-5 inline-block" />
-            </Link>
-          </div>
+export default function Home() {
+  const navigate = useNavigate();
+  const [query, setQuery] = useState('');
+  const [catalog, setCatalog] = useState(null);
+  const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    let active = true;
+    setFailed(false);
+    loadHomeCatalog().then(value => { if (active) setCatalog(value); }).catch(() => { if (active) setFailed(true); });
+    return () => { active = false; };
+  }, [attempt]);
+  const search = event => {
+    event.preventDefault();
+    navigate('/products' + (query.trim() ? '?q=' + encodeURIComponent(query.trim()) : ''));
+  };
+  const knownCategories = catalog?.categories.map(item => item.category) || [];
+  const categories = [...preferredCategories.filter(name => knownCategories.includes(name)), ...knownCategories.filter(name => !preferredCategories.includes(name))].slice(0, 6);
+  return <div className="home-page">
+    <section className="home-hero">
+      <picture className="hero-backdrop" aria-hidden="true">
+        <source media="(max-width: 767px)" srcSet={citySkylineMobile} />
+        <img src={citySkyline} alt="" width="1600" height="900" decoding="async" fetchPriority="high" />
+      </picture>
+      <div className="container hero-layout">
+        <div className="hero-copy">
+          <p className="hero-eyebrow">Haoguan Electrons</p>
+          <h1>Electronic components.<br /><span>Global connections.</span></h1>
+          <p className="hero-intro">Connecting your projects with electronic components, modules and sourcing support. Find your next component here.</p>
+          <form className="hero-search" onSubmit={search} role="search">
+            <label htmlFor="home-search" className="sr-only">Search by part number or product name</label>
+            <Search size={21} aria-hidden="true" />
+            <input id="home-search" value={query} onChange={event => setQuery(event.target.value)} placeholder="Part number or product name" maxLength={200} type="search" />
+            <button className="button" type="submit">Search <ArrowRight size={17} aria-hidden="true" /></button>
+          </form>
         </div>
       </div>
+    </section>
 
-      {/* Features Section */}
-      <div className="py-24 relative z-10">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div className="text-center mb-16">
-                <h2 className="text-3xl font-semibold text-white">Why Choose Us</h2>
-                <p className="mt-4 text-lg text-fluent-text-secondary">Excellence in every component we deliver.</p>
-            </div>
-            
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-                <div className="acrylic-card p-8 flex flex-col items-center text-center group">
-                    <div className="bg-fluent-blue/20 p-4 mb-6 group-hover:scale-110 transition-transform duration-300">
-                        <Zap className="h-8 w-8 text-fluent-blue" />
-                    </div>
-                    <h3 className="text-xl font-semibold mb-3 text-white">High Performance</h3>
-                    <p className="text-fluent-text-secondary leading-relaxed">Top-tier components sourced directly from industry leaders to ensure maximum reliability.</p>
-                </div>
-                <div className="acrylic-card p-8 flex flex-col items-center text-center group">
-                    <div className="bg-fluent-blue/20 p-4 mb-6 group-hover:scale-110 transition-transform duration-300">
-                        <Globe className="h-8 w-8 text-fluent-blue" />
-                    </div>
-                    <h3 className="text-xl font-semibold mb-3 text-white">Global Reach</h3>
-                    <p className="text-fluent-text-secondary leading-relaxed">Seamless logistics network delivering to over 50 countries with real-time tracking.</p>
-                </div>
-                <div className="acrylic-card p-8 flex flex-col items-center text-center group">
-                    <div className="bg-fluent-blue/20 p-4 mb-6 group-hover:scale-110 transition-transform duration-300">
-                        <ShieldCheck className="h-8 w-8 text-fluent-blue" />
-                    </div>
-                    <h3 className="text-xl font-semibold mb-3 text-white">Quality Assured</h3>
-                    <p className="text-fluent-text-secondary leading-relaxed">Every batch undergoes rigorous ISO-standard testing before leaving our warehouse.</p>
-                </div>
-            </div>
+    <section className="home-categories container" aria-labelledby="categories-heading">
+      <div className="section-heading">
+        <div><h2 id="categories-heading">Find your category.</h2><p>From individual components to ready-to-use modules.</p></div>
+        <Link to="/products" className="button-link">All products <ArrowRight size={17} /></Link>
+      </div>
+      {categories.length > 0 ? <div className="category-grid">
+        {categories.map((category, index) => {
+          const Icon = categoryIcons[index];
+          return <Link className="category-link" key={category} to={'/products?category=' + encodeURIComponent(category)}><span className="category-icon"><Icon size={25} strokeWidth={1.5} aria-hidden="true" /></span><span className="category-name">{category}</span><ChevronRight size={18} aria-hidden="true" /></Link>;
+        })}
+      </div> : failed ? <div className="home-inline-error" role="status"><p>Categories could not load. Please try again.</p><button className="button-secondary" onClick={() => setAttempt(value => value + 1)}>Try again</button></div> : <div className="category-grid" aria-label="Loading categories">{Array.from({ length: 6 }, (_, i) => <div className="category-placeholder" key={i} />)}</div>}
+    </section>
+
+    {catalog?.products.length > 1 && <section className="home-products" aria-labelledby="products-heading">
+      <div className="container">
+        <div className="section-heading"><div><h2 id="products-heading">A closer look at our catalog.</h2><p>Explore products and ask our team about your requirements.</p></div></div>
+        <div className="home-product-grid">
+          {catalog.products.slice(0, 4).map(item => <Link className="home-product-card" key={item.id} to={'/products?product=' + encodeURIComponent(item.id)}>
+            <div className="home-product-image">{item.images?.[0] ? <img src={item.images[0]} width="280" height="220" alt={item.name} loading="lazy" decoding="async" /> : <span>Image unavailable</span>}</div>
+            <div className="home-product-info"><span>{item.category}</span><h3 title={item.name}>{item.name}</h3><span className="product-view">View product <ArrowRight size={16} aria-hidden="true" /></span></div>
+          </Link>)}
         </div>
       </div>
-    </div>
-  );
-};
+    </section>}
 
-export default Home;
+    <section className="home-inquiry container">
+      <div className="inquiry-heading"><h2>A part in mind?<br />Let’s talk requirements.</h2><p>Send a part number, quantity and any details that matter to your project.</p><Link to="/contact" className="button">Contact Us <ArrowRight size={17} /></Link></div>
+      <ol className="inquiry-steps">
+        <li><span>1</span><div><h3>Find your component</h3><p>Search by name or browse product categories.</p></div></li>
+        <li><span>2</span><div><h3>Share your requirements</h3><p>Open a product and send an inquiry with its details included.</p></div></li>
+        <li><span>3</span><div><h3>Connect with our team</h3><p>Discuss specifications, availability and next steps.</p></div></li>
+      </ol>
+    </section>
+  </div>;
+}

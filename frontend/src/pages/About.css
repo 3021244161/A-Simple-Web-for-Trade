@@ -1,0 +1,29 @@
+.about-page { background-color: #081324; color: var(--ink); }
+.about-intro { position: relative; padding-block: 64px 48px; border-bottom: 1px solid var(--line); background-image: linear-gradient(90deg, #081324 40%, #08132400 100%), linear-gradient(#829fc00d 1px, transparent 1px), linear-gradient(90deg, #829fc00d 1px, transparent 1px); background-size: auto, 48px 48px, 48px 48px; }
+.about-eyebrow { display: flex; align-items: center; gap: 12px; color: var(--accent); font-size: 12px; font-weight: 700; letter-spacing: 1.7px; text-transform: uppercase; margin-bottom: 22px; }
+.about-eyebrow::before { content: ""; flex: 0 0 24px; height: 1px; background: var(--accent); }
+.about-intro h1 { color: var(--ink); font-size: clamp(38px, 4.2vw, 58px); line-height: 1.12; font-weight: 650; letter-spacing: -2px; }
+.about-lead { margin-top: 25px; font-size: 18px; line-height: 1.8; color: var(--muted); max-width: 700px; }
+.about-content { display: grid; grid-template-columns: 1.05fr 1fr; gap: 100px; padding-block: 60px 72px; }
+.about-content h2 { font-size: 30px; line-height: 1.25; letter-spacing: -.8px; font-weight: 650; margin-bottom: 22px; }
+.about-content p { font-size: 15px; line-height: 1.85; color: var(--muted); margin-bottom: 18px; }
+.about-content .button { margin-top: 8px; }
+.about-process { background: linear-gradient(135deg, #132740, var(--surface)); border: 1px solid #30465f; border-radius: 4px; padding: 32px; display: flex; flex-direction: column; gap: 26px; }
+.about-process > div { position: relative; padding-left: 46px; }
+.about-process > div + div { border-top: 1px solid var(--line); padding-top: 24px; }
+.about-process svg { position: absolute; left: 0; top: 1px; color: var(--accent); }
+.about-process > div + div svg { top: 25px; }
+.about-process h3 { font-size: 18px; font-weight: 600; margin-bottom: 8px; }
+.about-process p { font-size: 14px; line-height: 1.7; margin: 0; }
+.about-contact { background: linear-gradient(105deg, #122b48, #0e1e33); border-top: 1px solid #30465f; border-bottom: 1px solid var(--line); padding-block: 44px; }
+.about-contact h2 { font-size: 30px; font-weight: 650; letter-spacing: -.8px; }
+.about-contact p { color: var(--muted); margin-top: 12px; line-height: 1.7; }
+.about-contact .button-secondary { margin-top: 22px; }
+@media(max-width:767px) {
+  .about-intro { padding-block: 38px 32px; }
+  .about-intro h1 { font-size: 37px; letter-spacing: -1.3px; }
+  .about-lead { font-size: 16px; }
+  .about-content { grid-template-columns: 1fr; gap: 32px; padding-block: 36px; }
+  .about-content h2, .about-contact h2 { font-size: 27px; }
+  .about-process { padding: 24px 20px; }
+}

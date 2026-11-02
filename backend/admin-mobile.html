@@ -176,6 +176,44 @@
       category: ''
     };
 
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>"']/g, char => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[char]));
+    }
+
+    function appendProgress(message, error = false) {
+      const line = document.createElement('span');
+      line.textContent = String(message ?? '') + '\n';
+      if (error) line.style.color = '#ef4444';
+      document.getElementById('kbProgressText').appendChild(line);
+    }
+
+    function editProductByIndex(index) {
+      const product = (window.__products || [])[index];
+      if (product) editProductById(product.id);
+    }
+
+    function removeProductByIndex(index) {
+      const product = (window.__products || [])[index];
+      if (product) return removeProduct(product.id);
+    }
+
+    function deleteCategoryByIndex(index) {
+      const category = (window.__categories || [])[index];
+      if (typeof category === 'string') return deleteCategory(category);
+    }
+
+    function readMessageByIndex(index) {
+      const message = (window.__messages || [])[index];
+      if (message) return readMessage(message.id);
+    }
+
+    function deleteMessageByIndex(index) {
+      const message = (window.__messages || [])[index];
+      if (message) return deleteMessage(message.id);
+    }
+
     async function req(url, options = {}) {
       const resp = await fetch(url, { credentials: 'include', ...options });
       if (!resp.ok) {
@@ -258,14 +296,14 @@
       state.totalItems = data.totalItems || 0;
       document.getElementById('productCount').textContent = state.totalItems;
       document.getElementById('listMeta').textContent = `第 ${state.page} / ${state.totalPages} 页，共 ${state.totalItems} 条`;
-      document.getElementById('products').innerHTML = products.map(p => `
+      document.getElementById('products').innerHTML = products.map((p, index) => `
         <div class="item">
-          <div><strong>${p.title || ''}</strong></div>
-          <div class="muted">${p.category || ''}</div>
-          <div class="muted">${(p.description || '').slice(0, 120)}</div>
+          <div><strong>${escapeHtml(p.title)}</strong></div>
+          <div class="muted">${escapeHtml(p.category)}</div>
+          <div class="muted">${escapeHtml((p.description || '').slice(0, 120))}</div>
           <div class="row">
-            <button class="ghost" onclick="editProductById('${p.id}')">编辑</button>
-            <button class="danger" onclick="removeProduct('${p.id}')">删除</button>
+            <button class="ghost" onclick="editProductByIndex(${index})">编辑</button>
+            <button class="danger" onclick="removeProductByIndex(${index})">删除</button>
           </div>
         </div>
       `).join('');
@@ -274,14 +312,15 @@
     async function loadCategories() {
       const categories = await req('/admin/api/categories');
       const list = categories.map(c => c.category).filter(Boolean);
-      const options = list.map(c => `<option value="${c}">${c}</option>`).join('');
+      window.__categories = list;
+      const options = list.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
       document.getElementById('categoryOptions').innerHTML = options;
       document.getElementById('filterCategory').innerHTML = '<option value="">全部分类</option>' + options;
 
-      document.getElementById('categoryList').innerHTML = list.map(c => `
+      document.getElementById('categoryList').innerHTML = list.map((c, index) => `
         <div style="display: inline-flex; align-items: center; background: #f3f6fb; border: 1px solid #d7deea; border-radius: 999px; padding: 4px 12px; font-size: 13px;">
-          <span>${c}</span>
-          <button onclick="deleteCategory('${c}')" style="background: transparent; border: none; color: #e53935; margin: 0 0 0 6px; padding: 0; min-height: auto; font-size: 16px; cursor: pointer; width: auto;" title="删除此分类">&times;</button>
+          <span>${escapeHtml(c)}</span>
+          <button onclick="deleteCategoryByIndex(${index})" style="background: transparent; border: none; color: #e53935; margin: 0 0 0 6px; padding: 0; min-height: auto; font-size: 16px; cursor: pointer; width: auto;" title="删除此分类">&times;</button>
         </div>
       `).join('');
     }
@@ -443,13 +482,14 @@
 
     async function loadMessages() {
       const list = await req('/admin/api/messages');
-      document.getElementById('messages').innerHTML = list.map(m => `
+      window.__messages = list;
+      document.getElementById('messages').innerHTML = list.map((m, index) => `
         <div class="item">
-          <div><strong>${m.name || ''}</strong> <span class="muted">${m.email || ''}</span></div>
-          <div>${m.message || ''}</div>
+          <div><strong>${escapeHtml(m.name)}</strong> <span class="muted">${escapeHtml(m.email)}</span></div>
+          <div>${escapeHtml(m.message)}</div>
           <div class="row">
-            <button class="ghost" onclick="readMessage('${m.id}')">标记已读</button>
-            <button class="danger" onclick="deleteMessage('${m.id}')">删除</button>
+            <button class="ghost" onclick="readMessageByIndex(${index})">标记已读</button>
+            <button class="danger" onclick="deleteMessageByIndex(${index})">删除</button>
           </div>
         </div>
       `).join('');
@@ -479,7 +519,7 @@
       btn.textContent = '正在更新，请不要关闭页面...';
       btn.style.opacity = '0.7';
       progressBox.style.display = 'block';
-      progressText.innerHTML = '正在建立连接...\n';
+      progressText.textContent = '正在建立连接...\n';
 
       try {
         const eventSource = new EventSource('/admin/api/kb/update');
@@ -487,11 +527,7 @@
         eventSource.onmessage = function(event) {
           const data = JSON.parse(event.data);
           
-          if (data.error) {
-             progressText.innerHTML += `<span style="color: #ef4444;">${data.message}</span>\n`;
-          } else {
-             progressText.innerHTML += `${data.message}\n`;
-          }
+           appendProgress(data.message, data.error);
           
           // 自动滚动到底部
           progressText.scrollTop = progressText.scrollHeight;
@@ -513,7 +549,7 @@
           btn.disabled = false;
           btn.textContent = '更新知识库';
           btn.style.opacity = '1';
-          progressText.innerHTML += `<span style="color: #ef4444;">连接异常中断，请检查网络或刷新重试。</span>\n`;
+          appendProgress('连接异常中断，请检查网络或刷新重试。', true);
         };
 
       } catch (err) {
@@ -547,7 +583,8 @@
 
       try {
         const res = await req('/admin/api/bulk-import', { method: 'POST', body: fd });
-        resultDiv.innerHTML = `<span style="color: #10b981;">导入完成！成功: ${res.successCount} 条，失败: ${res.failCount} 条。</span>`;
+        resultDiv.textContent = `导入完成！成功: ${Number(res.successCount) || 0} 条，失败: ${Number(res.failCount) || 0} 条。`;
+        resultDiv.style.color = '#10b981';
         resultDiv.style.display = 'block';
         document.getElementById('bulkImportForm').reset();
         document.getElementById('csvTip').textContent = '未选择 CSV';

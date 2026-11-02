@@ -1,26 +1,13 @@
-import React from 'react';
+import { Link } from 'react-router-dom';
 
-const Footer = () => {
-  return (
-    <footer className="bg-crown-dark text-slate-400 py-8 mt-auto">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex flex-col md:flex-row justify-between items-center">
-          <div className="mb-4 md:mb-0">
-            <h3 className="text-white text-lg font-semibold">Haoguan Electrons</h3>
-            <p className="text-sm mt-1">Your Trusted Global Partner for Electronic Components</p>
-          </div>
-          <div className="flex space-x-6 text-sm">
-            <a href="#" className="hover:text-white transition-colors">Privacy Policy</a>
-            <a href="#" className="hover:text-white transition-colors">Terms of Service</a>
-            <a href="/contact" className="hover:text-white transition-colors">Contact Us</a>
-          </div>
-        </div>
-        <div className="mt-8 text-center text-xs border-t border-slate-700 pt-4">
-          &copy; {new Date().getFullYear()} Crown Electronics. All rights reserved.
-        </div>
+export default function Footer() {
+  return <footer className="site-footer">
+    <div className="container">
+      <div className="footer-top">
+        <div><Link to="/" className="footer-brand">Haoguan Electrons</Link><p>Electronic components, modules and tools.<br />Find a part. Tell us what you need.</p></div>
+        <nav className="footer-links" aria-label="Footer navigation"><Link to="/products">Products</Link><Link to="/about">About Us</Link><Link to="/contact">Contact Us</Link></nav>
       </div>
-    </footer>
-  );
-};
-
-export default Footer;
+      <div className="footer-bottom">&copy; {new Date().getFullYear()} Haoguan Electrons. All rights reserved.</div>
+    </div>
+  </footer>;
+}

@@ -12,6 +12,8 @@ frontend/build/
 # Backend Data & DB (Excluding Data as requested)
 backend/pb_data/
 backend/data/embeddings.json
+backend/.tmp_uploads/
+backend/.tmp_extract/
 
 # Scraped Raw Data
 scraped_data/
@@ -31,3 +33,7 @@ backend/bin/pocketbase
 .idea/
 .DS_Store
 Thumbs.db
+
+# Local production inspection snapshots (may contain private configuration)
+.maintenance/
+__pycache__/

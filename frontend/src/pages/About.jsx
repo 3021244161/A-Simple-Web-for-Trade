@@ -1,33 +1,22 @@
-import React from 'react';
+import { Link } from 'react-router-dom';
+import { ArrowRight, Search, MessageSquare, Package } from 'lucide-react';
+import './About.css';
 
-const About = () => {
-  return (
-    <div className="min-h-screen py-12 animate-fluent-enter">
-      <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="text-center mb-16">
-            <h1 className="text-4xl font-semibold text-white mb-6 drop-shadow-md">About Haoguan Electrons</h1>
-            <div className="w-24 h-1 bg-fluent-blue mx-auto rounded-full shadow-fluent-card"></div>
-        </div>
-        
-        <div className="acrylic-card p-10 md:p-14 border-l-2 border-r-2 border-t-0 border-b-0 border-fluent-blue shadow-[0_0_15px_rgba(59,130,246,0.3)]">
-            <div className="prose prose-lg text-white max-w-none font-light">
-                <p className="mb-8 leading-relaxed">
-                    <span className="font-semibold text-white tracking-wide">Haoguan Electrons</span> is a leading distributor of electronic components, dedicated to serving the global electronics industry. 
-                    With years of experience, we have established a strong reputation for reliability, quality, and customer service.
-                </p>
-                <p className="mb-8 leading-relaxed">
-                    Our mission is to provide engineers, designers, and manufacturers with easy access to the components they need to innovate and build the future. 
-                    We stock a wide range of products, from semiconductors and passive components to electromechanical parts and development boards.
-                </p>
-                <p className="leading-relaxed">
-                    We pride ourselves on our technical expertise and our ability to support our customers throughout their product development lifecycle. 
-                    Whether you are a hobbyist working on a personal project or a large corporation developing a mass-market product, Haoguan Electrons is here to help you succeed.
-                </p>
-            </div>
-        </div>
+export default function About() {
+  return <div className="about-page">
+    <section className="about-intro container">
+      <p className="about-eyebrow">About Haoguan Electrons</p>
+      <h1>A direct connection<br />to the parts you need.</h1>
+      <p className="about-lead">We bring electronic components, modules and tools together in one catalog, helping you explore parts and discuss your requirements.</p>
+    </section>
+    <section className="about-content container">
+      <div><h2>Start with the component.<br />Build the conversation.</h2><p>Every project has different requirements. Our catalog covers products from integrated circuits and passive components to sensors, power supplies and development modules.</p><p>Browse the range, view product images and descriptions, then contact our team with the part and quantity you need. We can discuss specifications, availability and next steps with you.</p><Link to="/products" className="button">Browse products <ArrowRight size={17} /></Link></div>
+      <div className="about-process">
+        <div><Search size={25} strokeWidth={1.5} /><h3>Find a part</h3><p>Search by product name or part number, or explore the catalog by category.</p></div>
+        <div><Package size={25} strokeWidth={1.5} /><h3>Check the details</h3><p>View product images and descriptions to help identify the component you need.</p></div>
+        <div><MessageSquare size={25} strokeWidth={1.5} /><h3>Ask our team</h3><p>Send a product inquiry or reach us through the contact details on our website.</p></div>
       </div>
-    </div>
-  );
-};
-
-export default About;
+    </section>
+    <section className="about-contact"><div className="container"><h2>Tell us what you’re working on.</h2><p>A part number and quantity are a useful place to start.</p><Link to="/contact" className="button-secondary">Contact Us <ArrowRight size={17} /></Link></div></section>
+  </div>;
+}
